@@ -25,7 +25,8 @@ const FALLBACK_CAMPAIGN = {
   id: "fallback-air-fryer",
   slug: "air-fryer",
   siteName: "Casa Premiada Ribeirão",
-  logoImage: "",
+  logoUrl: "",
+  imageUrl: "",
   title: "Air Fryer",
   shortDescription: "Concorra a uma Air Fryer comprando seus números.",
   description: "Depois eu preencho.",
@@ -33,19 +34,19 @@ const FALLBACK_CAMPAIGN = {
   organizerPhone: "16999999999",
   whatsapp: "5516999999999",
   pricePerNumber: 2,
+  totalNumbers: 300,
   rangeStart: 1,
   rangeEnd: 300,
   drawDate: "2026-05-10",
-  coverImage: "",
   paidNumbers: [],
   reservedNumbers: [],
+  numbersStatus: {},
 };
 
 function PublicCampaign({ campaign }) {
   const [selected, setSelected] = useState([]);
   const [step, setStep] = useState("grid");
   const [loading, setLoading] = useState(false);
-  const [pix, setPix] = useState(null);
   const [showMoreInfo, setShowMoreInfo] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(true);
 
@@ -79,11 +80,15 @@ function PublicCampaign({ campaign }) {
   }, [customer]);
 
   const rangeStart = Number(campaign.rangeStart || 1);
-  const rangeEnd = Number(campaign.rangeEnd || 300);
+  const rangeEnd = Number(
+    campaign.rangeEnd ||
+      campaign.totalNumbers ||
+      300
+  );
 
   const allNumbers = useMemo(() => {
     return Array.from(
-      { length: rangeEnd - rangeStart + 1 },
+      { length: Math.max(rangeEnd - rangeStart + 1, 0) },
       (_, idx) => rangeStart + idx
     );
   }, [rangeStart, rangeEnd]);
@@ -94,8 +99,14 @@ function PublicCampaign({ campaign }) {
   );
 
   const getStatus = (n) => {
+    const numberStatus = campaign.numbersStatus?.[n];
+
+    if (numberStatus?.status === "paid") return "paid";
+    if (numberStatus?.status === "reserved") return "reserved";
+
     if (campaign.paidNumbers?.includes(n)) return "paid";
     if (campaign.reservedNumbers?.includes(n)) return "reserved";
+
     return "available";
   };
 
@@ -132,16 +143,26 @@ function PublicCampaign({ campaign }) {
     setStep("grid");
   };
 
-  const createPix = async () => {
+  const startCheckoutPro = async () => {
+    if (!selected.length) {
+      alert("Selecione pelo menos um número.");
+      return;
+    }
+
+    if (!customer.name || !customer.phone) {
+      setStep("data");
+      return;
+    }
+
     setLoading(true);
+
     try {
-      const res = await fetch(`${API}/create-pix`, {
+      const res = await fetch(`${API}/create-checkout-pro`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           campaignSlug: campaign.slug,
-          selectedNumbers: selected,
-          amount: total,
+          numbers: selected,
           customer: {
             name: customer.name,
             phone: customer.phone,
@@ -150,12 +171,18 @@ function PublicCampaign({ campaign }) {
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Erro ao gerar Pix.");
 
-      setPix(data);
-      setStep("pix");
+      if (!res.ok) {
+        throw new Error(data.error || "Erro ao iniciar pagamento.");
+      }
+
+      if (!data.init_point) {
+        throw new Error("Link de pagamento não retornado.");
+      }
+
+      window.location.href = data.init_point;
     } catch (e) {
-      alert(e.message || "Erro ao gerar Pix.");
+      alert(e.message || "Erro ao iniciar pagamento.");
     } finally {
       setLoading(false);
     }
@@ -211,6 +238,16 @@ function PublicCampaign({ campaign }) {
   const whatsappUrl = `https://wa.me/55${organizerPhone}?text=${encodeURIComponent(
     `Olá! Quero informações sobre ${campaign.title || "o sorteio"}.`
   )}`;
+
+  const logoSrc =
+    campaign.logoUrl ||
+    campaign.logoImage ||
+    "https://via.placeholder.com/80x80?text=CP";
+
+  const coverSrc =
+    campaign.imageUrl ||
+    campaign.coverImage ||
+    "https://via.placeholder.com/900x600?text=Premio";
 
   return (
     <div className="page">
@@ -768,7 +805,8 @@ function PublicCampaign({ campaign }) {
         .outlineBtn,
         .successBtn,
         .whatsBtn,
-        .miniBtn {
+        .miniBtn,
+        .statusBtn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -790,7 +828,9 @@ function PublicCampaign({ campaign }) {
           box-shadow: 0 10px 22px rgba(177,0,25,0.22);
         }
 
-        .primaryBtn:disabled {
+        .primaryBtn:disabled,
+        .successBtn:disabled,
+        .statusBtn:disabled {
           opacity: 0.55;
           cursor: not-allowed;
           box-shadow: none;
@@ -807,6 +847,13 @@ function PublicCampaign({ campaign }) {
           color: #fff;
           background: linear-gradient(180deg, #11a84d 0%, #087c37 100%);
           box-shadow: 0 10px 22px rgba(17,168,77,0.22);
+        }
+
+        .statusBtn {
+          border: none;
+          color: #fff;
+          background: linear-gradient(180deg, #1f6dff 0%, #0f4dcc 100%);
+          box-shadow: 0 10px 22px rgba(31,109,255,0.22);
         }
 
         .whatsBtn {
@@ -848,30 +895,41 @@ function PublicCampaign({ campaign }) {
           line-height: 1;
         }
 
-        .qrPage {
+        .statusPage {
           min-height: calc(100vh - 24px);
           display: flex;
           align-items: flex-start;
         }
 
-        .qrImage {
-          width: 100%;
-          max-width: 260px;
-          display: block;
-          margin: 18px auto;
-          border-radius: 18px;
-          background: #fff;
-          padding: 12px;
+        .statusIcon {
+          width: 74px;
+          height: 74px;
+          margin: 10px auto 14px;
+          border-radius: 999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 34px;
+          font-weight: 900;
         }
 
-        .demoBox {
-          background: #fff8e5;
-          color: #7c5b00;
-          border-radius: 16px;
-          padding: 14px;
-          font-weight: 700;
-          margin: 14px 0;
-          border: 1px solid #f0d284;
+        .statusIcon.success {
+          background: #eaf9ef;
+          color: #0b8e3e;
+        }
+
+        .statusIcon.pending {
+          background: #fff6df;
+          color: #8a5c00;
+        }
+
+        .statusIcon.failure {
+          background: #fdecec;
+          color: #b3001a;
+        }
+
+        .statusCenter {
+          text-align: center;
         }
 
         .adminWrap {
@@ -973,17 +1031,269 @@ function PublicCampaign({ campaign }) {
       `}</style>
 
       <div className="wrapper">
-        {step !== "pix" && (
-          <>
-            <header className="hero">
-              <div className="heroTop">
-                <div className="brandBox">
-                  <div className="logoWrap">
+        <>
+          <header className="hero">
+            <div className="heroTop">
+              <div className="brandBox">
+                <div className="logoWrap">
+                  <img
+                    src={logoSrc}
+                    alt="Logo"
+                    onError={(e) => {
+                      e.currentTarget.src =
+                        "https://via.placeholder.com/80x80?text=CP";
+                    }}
+                  />
+                </div>
+
+                <div className="brandName">
+                  {campaign.siteName || "Casa Premiada Ribeirão"}
+                </div>
+              </div>
+            </div>
+
+            <div className="heroImageWrap">
+              <div className="heroImageCard">
+                <img
+                  src={coverSrc}
+                  alt={campaign.title}
+                  className="heroImg"
+                  onError={(e) => {
+                    e.currentTarget.src =
+                      "https://via.placeholder.com/900x600?text=Premio";
+                  }}
+                />
+
+                <div className="imageMetaBar">
+                  <div className="metaItem">
+                    <span>Valor por número</span>
+                    <strong>{formatMoney(campaign.pricePerNumber)}</strong>
+                  </div>
+
+                  <div className="metaItem">
+                    <span>Data</span>
+                    <strong>{campaign.drawDate || "A definir"}</strong>
+                  </div>
+
+                  <div className="metaItem">
+                    <span>Empresa</span>
+                    <strong>
+                      {campaign.company ||
+                        campaign.siteName ||
+                        "Casa Premiada Ribeirão"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="heroInfo">
+              <h1>{campaign.title || "Prêmio especial"}</h1>
+
+              <p className="heroDesc">
+                {campaign.shortDescription ||
+                  campaign.description ||
+                  "Participe agora e escolha seus números da sorte."}
+              </p>
+            </div>
+          </header>
+
+          {step === "grid" && (
+            <>
+              <section className="card">
+                <button
+                  className="moreInfoButton"
+                  onClick={() => setShowMoreInfo((prev) => !prev)}
+                  type="button"
+                >
+                  {showMoreInfo ? "Ocultar informações" : "Ver mais informações"}
+                </button>
+
+                {showMoreInfo && (
+                  <div className="moreInfoContent">
+                    <div className="contactLine">
+                      <strong>Descrição</strong>
+                    </div>
+
+                    <div className="contactLine">
+                      {campaign.description || "Depois eu preencho."}
+                    </div>
+
+                    <div className="contactLine" style={{ marginTop: 12 }}>
+                      <strong>Empresa</strong>
+                    </div>
+
+                    <div className="contactLine">
+                      {campaign.company ||
+                        campaign.siteName ||
+                        "Casa Premiada Ribeirão"}
+                    </div>
+
+                    <div className="contactLine">
+                      {campaign.organizerPhone || "(16) 99999-9999"}
+                    </div>
+
+                    <div className="secondaryActions">
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="whatsBtn"
+                      >
+                        WhatsApp
+                      </a>
+
+                      <button
+                        className="miniBtn"
+                        onClick={copyLink}
+                        type="button"
+                      >
+                        Copiar link
+                      </button>
+                    </div>
+
+                    <div className="secondaryActions">
+                      <button
+                        className="outlineBtn"
+                        onClick={shareLink}
+                        type="button"
+                      >
+                        Compartilhar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <section className="card">
+                <h3>Compras rápidas</h3>
+                <div className="muted">
+                  Adicione números aleatórios com um toque.
+                </div>
+
+                <div className="quickButtons">
+                  {[2, 5, 10, 20].map((n) => (
+                    <button
+                      key={n}
+                      className="quickBtn"
+                      onClick={() => randomAdd(n)}
+                      type="button"
+                    >
+                      +{n}
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="card" ref={numbersRef}>
+                <div className="chooseBanner">
+                  <div className="chooseArrow">↓</div>
+                  <div>
+                    <strong>Escolher números</strong>
+                    <div className="muted">
+                      Toque nos números disponíveis
+                    </div>
+                  </div>
+                </div>
+
+                <div className="legend">
+                  <span><i className="dot available"></i>Disponível</span>
+                  <span><i className="dot reserved"></i>Reservado</span>
+                  <span><i className="dot paid"></i>Pago</span>
+                  <span><i className="dot selected"></i>Selecionado</span>
+                </div>
+
+                <div className="gridNumbers">
+                  {allNumbers.map((n) => {
+                    const status = getStatus(n);
+                    const isSelected = selected.includes(n);
+
+                    return (
+                      <button
+                        key={n}
+                        className={`numberCard ${status} ${isSelected ? "selected" : ""}`}
+                        onClick={() => toggle(n)}
+                        type="button"
+                      >
+                        <strong>{pad(n)}</strong>
+                        <small>
+                          {isSelected
+                            ? "Selecionado"
+                            : status === "available"
+                            ? "Livre"
+                            : status === "reserved"
+                            ? "Reservado"
+                            : "Pago"}
+                        </small>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {selected.length > 0 && (
+                <section className="selectedSheet">
+                  <div className="selectedHeader">
+                    <h3>Números selecionados</h3>
+                    <div className="chip" style={{ cursor: "default" }}>
+                      {selected.length} item(ns)
+                    </div>
+                  </div>
+
+                  <div className="chips">
+                    {selected.map((n) => (
+                      <button
+                        key={n}
+                        className="chip"
+                        onClick={() => toggle(n)}
+                        type="button"
+                      >
+                        Nº {pad(n)} ✕
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="totalRow">
+                    <span>Total</span>
+                    <strong>{formatMoney(total)}</strong>
+                  </div>
+
+                  <div className="cartActions">
+                    <button
+                      className="outlineBtn"
+                      onClick={clearCart}
+                      type="button"
+                    >
+                      Limpar carrinho
+                    </button>
+
+                    <button
+                      className="primaryBtn"
+                      disabled={!selected.length}
+                      onClick={() => {
+                        if (customer.name && customer.phone) {
+                          startCheckoutPro();
+                        } else {
+                          setStep("data");
+                        }
+                      }}
+                      type="button"
+                    >
+                      Continuar
+                    </button>
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+
+          {step === "data" && (
+            <section className="card dataSheet">
+              <div className="dataHeader">
+                <div className="dataBrand">
+                  <div className="dataLogoWrap">
                     <img
-                      src={
-                        campaign.logoImage ||
-                        "https://via.placeholder.com/80x80?text=CP"
-                      }
+                      src={logoSrc}
                       alt="Logo"
                       onError={(e) => {
                         e.currentTarget.src =
@@ -992,357 +1302,46 @@ function PublicCampaign({ campaign }) {
                     />
                   </div>
 
-                  <div className="brandName">
-                    {campaign.siteName || "Casa Premiada Ribeirão"}
+                  <div>
+                    <div className="dataMini">Finalizar reserva</div>
+                    <h2>Seus dados</h2>
                   </div>
                 </div>
               </div>
 
-              <div className="heroImageWrap">
-                <div className="heroImageCard">
-                  <img
-                    src={campaign.coverImage}
-                    alt={campaign.title}
-                    className="heroImg"
-                    onError={(e) => {
-                      e.currentTarget.src =
-                        "https://via.placeholder.com/900x600?text=Premio";
-                    }}
-                  />
-
-                  <div className="imageMetaBar">
-                    <div className="metaItem">
-                      <span>Valor por número</span>
-                      <strong>{formatMoney(campaign.pricePerNumber)}</strong>
-                    </div>
-
-                    <div className="metaItem">
-                      <span>Data</span>
-                      <strong>{campaign.drawDate || "A definir"}</strong>
-                    </div>
-
-                    <div className="metaItem">
-                      <span>Empresa</span>
-                      <strong>{campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="heroInfo">
-                <h1>{campaign.title || "Prêmio especial"}</h1>
-
-                <p className="heroDesc">
-                  {campaign.shortDescription ||
-                    campaign.description ||
-                    "Participe agora e escolha seus números da sorte."}
-                </p>
-              </div>
-            </header>
-
-            {step === "grid" && (
-              <>
-                <section className="card">
-                  <button
-                    className="moreInfoButton"
-                    onClick={() => setShowMoreInfo((prev) => !prev)}
-                    type="button"
-                  >
-                    {showMoreInfo ? "Ocultar informações" : "Ver mais informações"}
-                  </button>
-
-                  {showMoreInfo && (
-                    <div className="moreInfoContent">
-                      <div className="contactLine">
-                        <strong>Descrição</strong>
-                      </div>
-
-                      <div className="contactLine">
-                        {campaign.description || "Depois eu preencho."}
-                      </div>
-
-                      <div className="contactLine" style={{ marginTop: 12 }}>
-                        <strong>Empresa</strong>
-                      </div>
-
-                      <div className="contactLine">
-                        {campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}
-                      </div>
-
-                      <div className="contactLine">
-                        {campaign.organizerPhone || "(16) 99999-9999"}
-                      </div>
-
-                      <div className="secondaryActions">
-                        <a
-                          href={whatsappUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="whatsBtn"
-                        >
-                          WhatsApp
-                        </a>
-
-                        <button
-                          className="miniBtn"
-                          onClick={copyLink}
-                          type="button"
-                        >
-                          Copiar link
-                        </button>
-                      </div>
-
-                      <div className="secondaryActions">
-                        <button
-                          className="outlineBtn"
-                          onClick={shareLink}
-                          type="button"
-                        >
-                          Compartilhar
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="card">
-                  <h3>Compras rápidas</h3>
-                  <div className="muted">
-                    Adicione números aleatórios com um toque.
-                  </div>
-
-                  <div className="quickButtons">
-                    {[2, 5, 10, 20].map((n) => (
-                      <button
-                        key={n}
-                        className="quickBtn"
-                        onClick={() => randomAdd(n)}
-                        type="button"
-                      >
-                        +{n}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="card" ref={numbersRef}>
-                  <div className="chooseBanner">
-                    <div className="chooseArrow">↓</div>
-                    <div>
-                      <strong>Escolher números</strong>
-                      <div className="muted">
-                        Toque nos números disponíveis
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="legend">
-                    <span><i className="dot available"></i>Disponível</span>
-                    <span><i className="dot reserved"></i>Reservado</span>
-                    <span><i className="dot paid"></i>Pago</span>
-                    <span><i className="dot selected"></i>Selecionado</span>
-                  </div>
-
-                  <div className="gridNumbers">
-                    {allNumbers.map((n) => {
-                      const status = getStatus(n);
-                      const isSelected = selected.includes(n);
-
-                      return (
-                        <button
-                          key={n}
-                          className={`numberCard ${status} ${isSelected ? "selected" : ""}`}
-                          onClick={() => toggle(n)}
-                          type="button"
-                        >
-                          <strong>{pad(n)}</strong>
-                          <small>
-                            {isSelected
-                              ? "Selecionado"
-                              : status === "available"
-                              ? "Livre"
-                              : status === "reserved"
-                              ? "Reservado"
-                              : "Pago"}
-                          </small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                {selected.length > 0 && (
-                  <section className="selectedSheet">
-                    <div className="selectedHeader">
-                      <h3>Números selecionados</h3>
-                      <div className="chip" style={{ cursor: "default" }}>
-                        {selected.length} item(ns)
-                      </div>
-                    </div>
-
-                    <div className="chips">
-                      {selected.map((n) => (
-                        <button
-                          key={n}
-                          className="chip"
-                          onClick={() => toggle(n)}
-                          type="button"
-                        >
-                          Nº {pad(n)} ✕
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="totalRow">
-                      <span>Total</span>
-                      <strong>{formatMoney(total)}</strong>
-                    </div>
-
-                    <div className="cartActions">
-                      <button
-                        className="outlineBtn"
-                        onClick={clearCart}
-                        type="button"
-                      >
-                        Limpar carrinho
-                      </button>
-
-                      <button
-                        className="primaryBtn"
-                        disabled={!selected.length}
-                        onClick={() => {
-                          if (customer.name && customer.phone) {
-                            createPix();
-                          } else {
-                            setStep("data");
-                          }
-                        }}
-                        type="button"
-                      >
-                        Continuar
-                      </button>
-                    </div>
-                  </section>
-                )}
-              </>
-            )}
-
-            {step === "data" && (
-              <section className="card dataSheet">
-                <div className="dataHeader">
-                  <div className="dataBrand">
-                    <div className="dataLogoWrap">
-                      <img
-                        src={
-                          campaign.logoImage ||
-                          "https://via.placeholder.com/80x80?text=CP"
-                        }
-                        alt="Logo"
-                        onError={(e) => {
-                          e.currentTarget.src =
-                            "https://via.placeholder.com/80x80?text=CP";
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <div className="dataMini">Finalizar reserva</div>
-                      <h2>Seus dados</h2>
-                    </div>
-                  </div>
+              <div className="dataSummary">
+                <div className="dataSummaryBox">
+                  <span>Quantidade</span>
+                  <strong>{selected.length}</strong>
                 </div>
 
-                <div className="dataSummary">
-                  <div className="dataSummaryBox">
-                    <span>Quantidade</span>
-                    <strong>{selected.length}</strong>
-                  </div>
-
-                  <div className="dataSummaryBox totalHighlight">
-                    <span>Total</span>
-                    <strong>{formatMoney(total)}</strong>
-                  </div>
-                </div>
-
-                <div className="chips">
-                  {selected.map((n) => (
-                    <span className="chip white" key={n}>
-                      Nº {pad(n)}
-                    </span>
-                  ))}
-                </div>
-
-                <label>Nome completo</label>
-                <input
-                  value={customer.name}
-                  onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
-                  placeholder="Digite seu nome completo"
-                />
-
-                <label>Número / WhatsApp</label>
-                <input
-                  value={customer.phone}
-                  onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
-                  placeholder="Digite seu WhatsApp"
-                />
-
-                <div className="actions">
-                  <button
-                    className="outlineBtn"
-                    onClick={() => setStep("grid")}
-                    type="button"
-                  >
-                    Voltar
-                  </button>
-
-                  <button
-                    className="successBtn"
-                    disabled={!customer.name || !customer.phone || loading}
-                    onClick={createPix}
-                    type="button"
-                  >
-                    {loading ? "Preparando pagamento..." : "Pagar"}
-                  </button>
-                </div>
-              </section>
-            )}
-          </>
-        )}
-
-        {step === "pix" && (
-          <div className="qrPage">
-            <section className="card" style={{ width: "100%" }}>
-              <h2>Pagamento</h2>
-              <p className="muted">
-                Finalize o pagamento para garantir seus números.
-              </p>
-
-              <div className="summary">
-                <div className="summaryRow">
-                  <span>Status</span>
-                  <strong>{pix?.status || "-"}</strong>
-                </div>
-
-                <div className="summaryRow">
+                <div className="dataSummaryBox totalHighlight">
                   <span>Total</span>
-                  <strong className="green">{formatMoney(total)}</strong>
+                  <strong>{formatMoney(total)}</strong>
                 </div>
               </div>
 
-              {pix?.qr_code_base64 ? (
-                <img
-                  className="qrImage"
-                  src={`data:image/png;base64,${pix.qr_code_base64}`}
-                  alt="QR Code Pix"
-                />
-              ) : (
-                <div className="demoBox">
-                  Modo demonstração: configure o token do Mercado Pago no backend.
-                </div>
-              )}
+              <div className="chips">
+                {selected.map((n) => (
+                  <span className="chip white" key={n}>
+                    Nº {pad(n)}
+                  </span>
+                ))}
+              </div>
 
-              <label>Pix copia e cola</label>
-              <textarea rows="6" readOnly value={pix?.qr_code || ""} />
+              <label>Nome completo</label>
+              <input
+                value={customer.name}
+                onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                placeholder="Digite seu nome completo"
+              />
+
+              <label>Número / WhatsApp</label>
+              <input
+                value={customer.phone}
+                onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
+                placeholder="Digite seu WhatsApp"
+              />
 
               <div className="actions">
                 <button
@@ -1355,15 +1354,16 @@ function PublicCampaign({ campaign }) {
 
                 <button
                   className="successBtn"
-                  onClick={() => navigator.clipboard.writeText(pix?.qr_code || "")}
+                  disabled={!customer.name || !customer.phone || loading}
+                  onClick={startCheckoutPro}
                   type="button"
                 >
-                  Copiar código Pix
+                  {loading ? "Preparando pagamento..." : "Pagar com Mercado Pago"}
                 </button>
               </div>
             </section>
-          </div>
-        )}
+          )}
+        </>
       </div>
 
       {showScrollButton && step === "grid" && (
@@ -1380,6 +1380,142 @@ function PublicCampaign({ campaign }) {
   );
 }
 
+function PaymentReturnPage() {
+  const pathname = window.location.pathname;
+  const isSuccess = pathname.includes("/pagamento/sucesso");
+  const isPending = pathname.includes("/pagamento/pendente");
+  const isFailure = pathname.includes("/pagamento/falha");
+
+  let title = "Pagamento";
+  let description = "Acompanhe o status do seu pagamento.";
+  let iconClass = "pending";
+  let icon = "⏳";
+
+  if (isSuccess) {
+    title = "Pagamento aprovado";
+    description =
+      "Seu pagamento foi aprovado. Seus números serão confirmados automaticamente em instantes.";
+    iconClass = "success";
+    icon = "✓";
+  } else if (isPending) {
+    title = "Pagamento pendente";
+    description =
+      "Seu pagamento ainda está sendo processado. Assim que for confirmado, seus números serão liberados.";
+    iconClass = "pending";
+    icon = "⏳";
+  } else if (isFailure) {
+    title = "Pagamento não concluído";
+    description =
+      "O pagamento não foi concluído. Você pode voltar e tentar novamente.";
+    iconClass = "failure";
+    icon = "!";
+  }
+
+  return (
+    <div className="page">
+      <style>{`
+        * { box-sizing: border-box; }
+        html, body, #root {
+          margin: 0;
+          padding: 0;
+          min-height: 100%;
+          font-family: Inter, system-ui, sans-serif;
+          background: #f7f7f7;
+        }
+        .page { min-height: 100vh; padding: 12px 10px 40px; }
+        .wrapper { width: 100%; max-width: 560px; margin: 0 auto; }
+        .card {
+          background: #fff;
+          color: #111;
+          border-radius: 22px;
+          padding: 20px;
+          box-shadow: 0 12px 28px rgba(0,0,0,0.08);
+          margin-bottom: 14px;
+          border: 1px solid #efefef;
+        }
+        .muted { color: #6d6d6d; font-size: 14px; line-height: 1.5; }
+        .actions {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+          margin-top: 16px;
+        }
+        .primaryBtn,
+        .outlineBtn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 50px;
+          border-radius: 16px;
+          font-size: 14px;
+          font-weight: 900;
+          text-decoration: none;
+          cursor: pointer;
+        }
+        .primaryBtn {
+          border: none;
+          color: #fff;
+          background: linear-gradient(180deg, #b10019 0%, #850013 100%);
+          box-shadow: 0 10px 22px rgba(177,0,25,0.22);
+        }
+        .outlineBtn {
+          border: 1px solid #eadbb4;
+          color: #8a5c00;
+          background: #fff8e7;
+        }
+        .statusIcon {
+          width: 74px;
+          height: 74px;
+          margin: 10px auto 14px;
+          border-radius: 999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 34px;
+          font-weight: 900;
+        }
+        .statusIcon.success {
+          background: #eaf9ef;
+          color: #0b8e3e;
+        }
+        .statusIcon.pending {
+          background: #fff6df;
+          color: #8a5c00;
+        }
+        .statusIcon.failure {
+          background: #fdecec;
+          color: #b3001a;
+        }
+        .statusCenter { text-align: center; }
+      `}</style>
+
+      <div className="wrapper">
+        <section className="card">
+          <div className="statusCenter">
+            <div className={`statusIcon ${iconClass}`}>{icon}</div>
+            <h1 style={{ marginTop: 0, marginBottom: 8 }}>{title}</h1>
+            <p className="muted">{description}</p>
+          </div>
+
+          <div className="actions">
+            <a className="primaryBtn" href="#/">
+              Voltar ao início
+            </a>
+
+            <button
+              className="outlineBtn"
+              onClick={() => window.location.reload()}
+              type="button"
+            >
+              Atualizar
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel() {
   const [password, setPassword] = useState("");
   const [token, setToken] = useState(localStorage.getItem("admin_token") || "");
@@ -1388,7 +1524,7 @@ function AdminPanel() {
 
   const [form, setForm] = useState({
     siteName: "Casa Premiada Ribeirão",
-    logoImage: "",
+    logoUrl: "",
     title: "",
     slug: "",
     shortDescription: "",
@@ -1397,10 +1533,9 @@ function AdminPanel() {
     organizerPhone: "",
     whatsapp: "",
     pricePerNumber: 2,
-    rangeStart: 1,
-    rangeEnd: 300,
+    totalNumbers: 300,
     drawDate: "",
-    coverImage: "",
+    imageUrl: "",
   });
 
   const headers = token
@@ -1444,8 +1579,8 @@ function AdminPanel() {
     const payload = {
       ...form,
       pricePerNumber: Number(form.pricePerNumber),
-      rangeStart: Number(form.rangeStart),
-      rangeEnd: Number(form.rangeEnd),
+      totalNumbers: Number(form.totalNumbers),
+      active: true,
     };
 
     const res = await fetch(`${API}/admin/campaigns`, {
@@ -1460,7 +1595,7 @@ function AdminPanel() {
     alert("Campanha criada.");
     setForm({
       siteName: "Casa Premiada Ribeirão",
-      logoImage: "",
+      logoUrl: "",
       title: "",
       slug: "",
       shortDescription: "",
@@ -1469,10 +1604,9 @@ function AdminPanel() {
       organizerPhone: "",
       whatsapp: "",
       pricePerNumber: 2,
-      rangeStart: 1,
-      rangeEnd: 300,
+      totalNumbers: 300,
       drawDate: "",
-      coverImage: "",
+      imageUrl: "",
     });
     load();
   };
@@ -1709,8 +1843,8 @@ function AdminPanel() {
             <div>
               <label>URL da logo</label>
               <input
-                value={form.logoImage}
-                onChange={(e) => setForm({ ...form, logoImage: e.target.value })}
+                value={form.logoUrl}
+                onChange={(e) => setForm({ ...form, logoUrl: e.target.value })}
                 placeholder="https://..."
               />
             </div>
@@ -1781,28 +1915,19 @@ function AdminPanel() {
             </div>
 
             <div>
-              <label>Começa em</label>
+              <label>Total de números</label>
               <input
                 type="number"
-                value={form.rangeStart}
-                onChange={(e) => setForm({ ...form, rangeStart: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <label>Termina em</label>
-              <input
-                type="number"
-                value={form.rangeEnd}
-                onChange={(e) => setForm({ ...form, rangeEnd: e.target.value })}
+                value={form.totalNumbers}
+                onChange={(e) => setForm({ ...form, totalNumbers: e.target.value })}
               />
             </div>
 
             <div>
               <label>URL da foto do prêmio</label>
               <input
-                value={form.coverImage}
-                onChange={(e) => setForm({ ...form, coverImage: e.target.value })}
+                value={form.imageUrl}
+                onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
               />
             </div>
 
@@ -1847,7 +1972,8 @@ function AdminPanel() {
                 <div>
                   <strong>{item.title}</strong>
                   <div className="muted">
-                    {item.slug} • {formatMoney(item.pricePerNumber)} • {item.rangeStart} até {item.rangeEnd}
+                    {item.slug} • {formatMoney(item.pricePerNumber)} • 1 até{" "}
+                    {item.totalNumbers || item.rangeEnd}
                   </div>
                 </div>
 
@@ -1915,6 +2041,14 @@ export default function App() {
 
     loadCampaigns();
   }, []);
+
+  if (
+    window.location.pathname.includes("/pagamento/sucesso") ||
+    window.location.pathname.includes("/pagamento/pendente") ||
+    window.location.pathname.includes("/pagamento/falha")
+  ) {
+    return <PaymentReturnPage />;
+  }
 
   if (hash === "#/admin") return <AdminPanel />;
 
