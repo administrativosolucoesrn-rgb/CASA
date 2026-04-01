@@ -6,480 +6,616 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
-import { MercadoPagoConfig, Payment } from "mercadopago";
+import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const app = express();
 const port = process.env.PORT || 3001;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || true }));
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || true,
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "2mb" }));
 
 const dataDir = fs.existsSync(path.join(__dirname, "dados"))
   ? path.join(__dirname, "dados")
   : path.join(__dirname, "data");
 
-const campaignsFile = path.join(dataDir, "campaigns.json");
-const ordersFile = path.join(dataDir, "orders.json");
-
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
-if (!fs.existsSync(campaignsFile)) {
-  fs.writeFileSync(campaignsFile, "[]");
-}
-if (!fs.existsSync(ordersFile)) {
-  fs.writeFileSync(ordersFile, "[]");
-}
 
-const mpClient = new MercadoPagoConfig({
-  accessToken: process.env.MP_ACCESS_TOKEN || "",
-});
-const paymentClient = new Payment(mpClient);
+const CAMPAIGNS_FILE = path.join(dataDir, "campaigns.json");
+const ORDERS_FILE = path.join(dataDir, "orders.json");
 
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf-8"));
-  } catch {
-    return [];
+function ensureJsonFile(filePath, fallbackValue) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify(fallbackValue, null, 2), "utf-8");
   }
 }
 
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+ensureJsonFile(CAMPAIGNS_FILE, []);
+ensureJsonFile(ORDERS_FILE, []);
+
+function readJson(filePath, fallbackValue) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    return raw ? JSON.parse(raw) : fallbackValue;
+  } catch (error) {
+    console.error(`Erro ao ler ${filePath}:`, error);
+    return fallbackValue;
+  }
 }
 
-function auth(req, res, next) {
-  const header = req.headers.authorization || "";
-  const token = header.replace("Bearer ", "");
-  if (!token) return res.status(401).json({ error: "Não autorizado." });
+function writeJson(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+}
 
+function readCampaigns() {
+  return readJson(CAMPAIGNS_FILE, []);
+}
+
+function saveCampaigns(campaigns) {
+  writeJson(CAMPAIGNS_FILE, campaigns);
+}
+
+function readOrders() {
+  return readJson(ORDERS_FILE, []);
+}
+
+function saveOrders(orders) {
+  writeJson(ORDERS_FILE, orders);
+}
+
+function slugify(text = "") {
+  return String(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+function normalizeNumbers(numbers) {
+  if (!Array.isArray(numbers)) return [];
+  return [...new Set(numbers.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))];
+}
+
+function getCampaignBySlug(slug) {
+  return readCampaigns().find((c) => c.slug === slug);
+}
+
+function getCampaignIndexBySlug(slug) {
+  return readCampaigns().findIndex((c) => c.slug === slug);
+}
+
+function isPaidStatus(status) {
+  return ["approved", "authorized"].includes(String(status || "").toLowerCase());
+}
+
+function isPendingStatus(status) {
+  return ["pending", "in_process"].includes(String(status || "").toLowerCase());
+}
+
+function buildNumbersMap(campaign, orders) {
+  const result = {};
+  const maxNumbers = Number(campaign.totalNumbers || 0);
+
+  for (let i = 1; i <= maxNumbers; i += 1) {
+    result[i] = { status: "available", orderId: null };
+  }
+
+  for (const order of orders) {
+    if (order.campaignSlug !== campaign.slug) continue;
+
+    const numbers = normalizeNumbers(order.selectedNumbers);
+
+    for (const num of numbers) {
+      if (!result[num]) continue;
+
+      if (isPaidStatus(order.status)) {
+        result[num] = { status: "paid", orderId: order.id };
+      } else if (isPendingStatus(order.status) && result[num].status === "available") {
+        result[num] = { status: "reserved", orderId: order.id };
+      }
+    }
+  }
+
+  return result;
+}
+
+function getUnavailableNumbers(campaign, orders) {
+  const map = buildNumbersMap(campaign, orders);
+  return Object.entries(map)
+    .filter(([, value]) => value.status !== "available")
+    .map(([num]) => Number(num));
+}
+
+function validateNumbersAvailable(campaign, requestedNumbers, orders, ignoreOrderId = null) {
+  const map = buildNumbersMap(campaign, orders);
+
+  for (const num of requestedNumbers) {
+    if (num < 1 || num > Number(campaign.totalNumbers)) {
+      return `Número inválido: ${num}`;
+    }
+
+    const slot = map[num];
+    if (!slot) return `Número inválido: ${num}`;
+
+    if (slot.status !== "available" && slot.orderId !== ignoreOrderId) {
+      return `Número indisponível: ${num}`;
+    }
+  }
+
+  return null;
+}
+
+function createAdminToken() {
+  return jwt.sign({ role: "admin" }, process.env.JWT_SECRET, { expiresIn: "7d" });
+}
+
+function authMiddleware(req, res, next) {
   try {
-    jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ error: "Não autorizado." });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET);
     next();
-  } catch {
+  } catch (error) {
     return res.status(401).json({ error: "Token inválido." });
   }
 }
 
-function sanitizeSlug(value) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function ensureArrayNumbers(value) {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((n) => Number(n)).filter((n) => Number.isFinite(n)))].sort(
-    (a, b) => a - b
-  );
-}
-
-function findCampaignBySlug(slug) {
-  const campaigns = readJson(campaignsFile);
-  const campaign = campaigns.find((c) => c.slug === slug);
-  return { campaigns, campaign };
-}
-
-function removeNumbers(list = [], numbers = []) {
-  const toRemove = new Set(numbers.map(Number));
-  return ensureArrayNumbers(list).filter((n) => !toRemove.has(Number(n)));
-}
-
-function addNumbers(list = [], numbers = []) {
-  return ensureArrayNumbers([...(list || []), ...(numbers || [])]);
-}
-
-function updateCampaignNumbersByOrderStatus(campaign, order, status) {
-  const selectedNumbers = ensureArrayNumbers(order.selectedNumbers || []);
-  const normalizedStatus = String(status || "").toLowerCase();
-
-  if (normalizedStatus === "approved") {
-    campaign.reservedNumbers = removeNumbers(campaign.reservedNumbers, selectedNumbers);
-    campaign.paidNumbers = addNumbers(campaign.paidNumbers, selectedNumbers);
-    return;
-  }
-
-  if (
-    [
-      "rejected",
-      "cancelled",
-      "cancelled_by_user",
-      "refunded",
-      "charged_back",
-    ].includes(normalizedStatus)
-  ) {
-    campaign.reservedNumbers = removeNumbers(campaign.reservedNumbers, selectedNumbers);
-    campaign.paidNumbers = removeNumbers(campaign.paidNumbers, selectedNumbers);
-    return;
-  }
-
-  // pending / in_process / authorized: mantém reservado
-  campaign.reservedNumbers = addNumbers(campaign.reservedNumbers, selectedNumbers);
-}
-
-function saveOrderAndCampaignStatus({
-  mpPaymentId,
-  externalReference,
-  paymentStatus,
-  paymentRaw,
-}) {
-  const orders = readJson(ordersFile);
-  const campaigns = readJson(campaignsFile);
-
-  const orderIndex = orders.findIndex(
-    (o) =>
-      String(o.mpPaymentId || "") === String(mpPaymentId || "") ||
-      String(o.id || "") === String(externalReference || "")
-  );
-
-  if (orderIndex === -1) {
-    return { updated: false, reason: "Pedido não encontrado." };
-  }
-
-  const order = orders[orderIndex];
-  const campaignIndex = campaigns.findIndex((c) => c.slug === order.campaignSlug);
-
-  if (campaignIndex === -1) {
-    return { updated: false, reason: "Campanha não encontrada." };
-  }
-
-  orders[orderIndex] = {
-    ...order,
-    status: paymentStatus,
-    mpPaymentId: mpPaymentId || order.mpPaymentId || null,
-    paidAt: paymentStatus === "approved" ? new Date().toISOString() : order.paidAt || null,
-    updatedAt: new Date().toISOString(),
-    paymentDetails: {
-      id: paymentRaw?.id || null,
-      status: paymentRaw?.status || paymentStatus,
-      status_detail: paymentRaw?.status_detail || null,
-      transaction_amount: paymentRaw?.transaction_amount || null,
-      date_approved: paymentRaw?.date_approved || null,
-      date_created: paymentRaw?.date_created || null,
-    },
-  };
-
-  const campaign = campaigns[campaignIndex];
-  updateCampaignNumbersByOrderStatus(campaign, orders[orderIndex], paymentStatus);
-
-  campaigns[campaignIndex] = {
-    ...campaign,
-    reservedNumbers: ensureArrayNumbers(campaign.reservedNumbers),
-    paidNumbers: ensureArrayNumbers(campaign.paidNumbers),
-  };
-
-  writeJson(ordersFile, orders);
-  writeJson(campaignsFile, campaigns);
-
-  return { updated: true, order: orders[orderIndex], campaign: campaigns[campaignIndex] };
-}
-
-async function fetchMercadoPagoPayment(paymentId) {
-  return paymentClient.get({ id: String(paymentId) });
-}
-
-app.get("/", (_, res) => {
-  res.send("API funcionando 🚀");
+const mpClient = new MercadoPagoConfig({
+  accessToken: process.env.MP_ACCESS_TOKEN,
 });
 
-app.get("/api/health", (_, res) => {
+const preferenceClient = new Preference(mpClient);
+const paymentClient = new Payment(mpClient);
+
+function saveOrderAndCampaignStatus(order) {
+  const orders = readOrders();
+  const campaigns = readCampaigns();
+
+  const existingOrderIndex = orders.findIndex((o) => o.id === order.id);
+  if (existingOrderIndex >= 0) {
+    orders[existingOrderIndex] = order;
+  } else {
+    orders.unshift(order);
+  }
+  saveOrders(orders);
+
+  const campaignIndex = campaigns.findIndex((c) => c.slug === order.campaignSlug);
+  if (campaignIndex >= 0) {
+    const campaign = campaigns[campaignIndex];
+    const allOrders = readOrders();
+    const numbersMap = buildNumbersMap(campaign, allOrders);
+
+    campaign.numbersStatus = numbersMap;
+    campaign.updatedAt = new Date().toISOString();
+
+    campaigns[campaignIndex] = campaign;
+    saveCampaigns(campaigns);
+  }
+}
+
+async function markOrderPaidFromPayment(paymentData) {
+  const externalReference = paymentData.external_reference;
+  if (!externalReference) return false;
+
+  const orders = readOrders();
+  const orderIndex = orders.findIndex((o) => o.id === externalReference);
+
+  if (orderIndex === -1) return false;
+
+  const order = orders[orderIndex];
+  order.status = paymentData.status || order.status;
+  order.statusDetail = paymentData.status_detail || order.statusDetail || "";
+  order.mpPaymentId = paymentData.id || order.mpPaymentId || null;
+  order.approvedAt = new Date().toISOString();
+  order.paymentDetails = {
+    id: paymentData.id,
+    status: paymentData.status,
+    status_detail: paymentData.status_detail,
+    date_approved: paymentData.date_approved || null,
+    transaction_amount: paymentData.transaction_amount || null,
+  };
+
+  orders[orderIndex] = order;
+  saveOrders(orders);
+
+  saveOrderAndCampaignStatus(order);
+  return true;
+}
+
+/**
+ * HEALTH
+ */
+app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * FRONTEND BUILD
+ */
+const frontendDist = path.join(__dirname, "frontend", "dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+}
+
+/**
+ * AUTH
+ */
 app.post("/api/admin/login", (req, res) => {
   const { password } = req.body || {};
-  if (!password) return res.status(400).json({ error: "Senha obrigatória." });
 
-  if (password !== process.env.ADMIN_PASSWORD) {
-    return res.status(401).json({ error: "Senha incorreta." });
+  if (!process.env.ADMIN_PASSWORD || !process.env.JWT_SECRET) {
+    return res.status(500).json({ error: "Configuração do servidor incompleta." });
   }
 
-  const token = jwt.sign(
-    { role: "admin" },
-    process.env.JWT_SECRET || "dev-secret",
-    { expiresIn: "12h" }
-  );
+  if (password !== process.env.ADMIN_PASSWORD) {
+    return res.status(401).json({ error: "Senha inválida." });
+  }
 
-  res.json({ token });
+  return res.json({
+    token: createAdminToken(),
+  });
 });
 
-app.get("/api/campaigns", (_, res) => {
-  const campaigns = readJson(campaignsFile);
+/**
+ * CAMPAIGNS - PUBLIC
+ */
+app.get("/api/campaigns", (_req, res) => {
+  const campaigns = readCampaigns().map((campaign) => {
+    const orders = readOrders();
+    const unavailableNumbers = getUnavailableNumbers(campaign, orders);
+
+    return {
+      ...campaign,
+      unavailableNumbers,
+    };
+  });
+
   res.json(campaigns);
 });
 
 app.get("/api/campaigns/:slug", (req, res) => {
-  const campaigns = readJson(campaignsFile);
-  const item = campaigns.find((c) => c.slug === req.params.slug);
-  if (!item) return res.status(404).json({ error: "Campanha não encontrada." });
-  res.json(item);
-});
+  const campaign = getCampaignBySlug(req.params.slug);
 
-app.get("/api/admin/campaigns", auth, (_, res) => {
-  const campaigns = readJson(campaignsFile);
-  res.json(campaigns);
-});
-
-app.post("/api/admin/campaigns", auth, (req, res) => {
-  const campaigns = readJson(campaignsFile);
-  const payload = req.body || {};
-  const slug = sanitizeSlug(payload.slug);
-
-  if (!payload.title || !slug) {
-    return res.status(400).json({ error: "Título e slug são obrigatórios." });
+  if (!campaign) {
+    return res.status(404).json({ error: "Campanha não encontrada." });
   }
 
+  const orders = readOrders();
+  const numbersMap = buildNumbersMap(campaign, orders);
+
+  return res.json({
+    ...campaign,
+    numbersStatus: numbersMap,
+  });
+});
+
+/**
+ * CAMPAIGNS - ADMIN
+ */
+app.get("/api/admin/campaigns", authMiddleware, (_req, res) => {
+  res.json(readCampaigns());
+});
+
+app.post("/api/admin/campaigns", authMiddleware, (req, res) => {
+  const body = req.body || {};
+  const campaigns = readCampaigns();
+
+  const title = String(body.title || "").trim();
+  if (!title) {
+    return res.status(400).json({ error: "Título é obrigatório." });
+  }
+
+  const slug = body.slug ? slugify(body.slug) : slugify(title);
   if (campaigns.some((c) => c.slug === slug)) {
-    return res.status(400).json({ error: "Já existe uma campanha com esse link." });
+    return res.status(400).json({ error: "Já existe uma campanha com esse slug." });
   }
 
-  const newCampaign = {
+  const totalNumbers = Number(body.totalNumbers || 0);
+  const pricePerNumber = Number(body.pricePerNumber || 0);
+
+  const campaign = {
     id: uuidv4(),
-    siteName: payload.siteName || "Casa Premiada Ribeirão",
-    logoImage: payload.logoImage || "",
-    title: payload.title,
     slug,
-    shortDescription: payload.shortDescription || "",
-    description: payload.description || "",
-    company: payload.company || payload.siteName || "Casa Premiada Ribeirão",
-    organizerPhone: payload.organizerPhone || "",
-    whatsapp: payload.whatsapp || "",
-    pricePerNumber: Number(payload.pricePerNumber || 0),
-    rangeStart: Number(payload.rangeStart || 1),
-    rangeEnd: Number(payload.rangeEnd || 300),
-    drawDate: payload.drawDate || "",
-    coverImage: payload.coverImage || "",
-    theme: payload.theme || {
-      primary: "#b40019",
-      secondary: "#ffffff",
-      accent: "#d4af37",
-    },
-    reservedNumbers: [],
-    paidNumbers: [],
+    title,
+    siteName: body.siteName || "Casa Premiada Ribeirão",
+    description: body.description || "",
+    imageUrl: body.imageUrl || "",
+    logoUrl: body.logoUrl || "",
+    drawDate: body.drawDate || "",
+    totalNumbers,
+    pricePerNumber,
+    active: body.active !== false,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    numbersStatus: {},
   };
 
-  campaigns.unshift(newCampaign);
-  writeJson(campaignsFile, campaigns);
-  res.status(201).json(newCampaign);
+  campaigns.unshift(campaign);
+  saveCampaigns(campaigns);
+
+  return res.status(201).json(campaign);
 });
 
-app.put("/api/admin/campaigns/:id", auth, (req, res) => {
-  const campaigns = readJson(campaignsFile);
-  const index = campaigns.findIndex((c) => c.id === req.params.id);
+app.put("/api/admin/campaigns/:slug", authMiddleware, (req, res) => {
+  const campaigns = readCampaigns();
+  const index = campaigns.findIndex((c) => c.slug === req.params.slug);
+
   if (index === -1) {
     return res.status(404).json({ error: "Campanha não encontrada." });
   }
 
+  const current = campaigns[index];
+  const nextSlug = req.body.slug ? slugify(req.body.slug) : current.slug;
+
+  if (
+    nextSlug !== current.slug &&
+    campaigns.some((c) => c.slug === nextSlug)
+  ) {
+    return res.status(400).json({ error: "Slug já está em uso." });
+  }
+
   campaigns[index] = {
-    ...campaigns[index],
+    ...current,
     ...req.body,
-    slug: req.body.slug ? sanitizeSlug(req.body.slug) : campaigns[index].slug,
-    pricePerNumber: Number(req.body.pricePerNumber ?? campaigns[index].pricePerNumber),
-    rangeStart: Number(req.body.rangeStart ?? campaigns[index].rangeStart),
-    rangeEnd: Number(req.body.rangeEnd ?? campaigns[index].rangeEnd),
-    reservedNumbers: ensureArrayNumbers(
-      req.body.reservedNumbers ?? campaigns[index].reservedNumbers
-    ),
-    paidNumbers: ensureArrayNumbers(req.body.paidNumbers ?? campaigns[index].paidNumbers),
+    slug: nextSlug,
     updatedAt: new Date().toISOString(),
   };
 
-  writeJson(campaignsFile, campaigns);
-  res.json(campaigns[index]);
+  saveCampaigns(campaigns);
+  return res.json(campaigns[index]);
 });
 
-app.get("/api/admin/orders", auth, (_, res) => {
-  const orders = readJson(ordersFile);
-  res.json(orders);
+app.delete("/api/admin/campaigns/:slug", authMiddleware, (req, res) => {
+  const campaigns = readCampaigns();
+  const filtered = campaigns.filter((c) => c.slug !== req.params.slug);
+
+  if (filtered.length === campaigns.length) {
+    return res.status(404).json({ error: "Campanha não encontrada." });
+  }
+
+  saveCampaigns(filtered);
+  return res.json({ ok: true });
 });
 
-app.post("/api/create-pix", async (req, res) => {
+/**
+ * ORDERS - ADMIN
+ */
+app.get("/api/admin/orders", authMiddleware, (_req, res) => {
+  res.json(readOrders());
+});
+
+/**
+ * CREATE CHECKOUT PRO
+ */
+app.post("/api/create-checkout-pro", async (req, res) => {
   try {
-    const { campaignSlug, selectedNumbers = [], customer = {}, amount } = req.body || {};
-    const { campaigns, campaign } = findCampaignBySlug(campaignSlug);
+    const { campaignSlug, customer, numbers } = req.body || {};
 
+    const cleanNumbers = normalizeNumbers(numbers);
+
+    if (!campaignSlug || !cleanNumbers.length) {
+      return res.status(400).json({ error: "Dados inválidos." });
+    }
+
+    const campaign = getCampaignBySlug(campaignSlug);
     if (!campaign) {
       return res.status(404).json({ error: "Campanha não encontrada." });
     }
 
-    const cleanNumbers = ensureArrayNumbers(selectedNumbers);
-
-    if (!cleanNumbers.length) {
-      return res.status(400).json({ error: "Selecione ao menos um número." });
+    if (!campaign.active) {
+      return res.status(400).json({ error: "Campanha inativa." });
     }
 
-    for (const n of cleanNumbers) {
-      if (
-        ensureArrayNumbers(campaign.reservedNumbers).includes(n) ||
-        ensureArrayNumbers(campaign.paidNumbers).includes(n)
-      ) {
-        return res.status(400).json({ error: `O número ${n} não está mais disponível.` });
-      }
+    const customerName = String(customer?.name || "").trim();
+    const customerPhone = String(customer?.phone || "").trim();
+
+    if (!customerName || !customerPhone) {
+      return res.status(400).json({ error: "Nome e telefone são obrigatórios." });
     }
 
-    if (!customer.name || !customer.phone) {
-      return res.status(400).json({ error: "Nome e WhatsApp são obrigatórios." });
+    const orders = readOrders();
+    const availabilityError = validateNumbersAvailable(campaign, cleanNumbers, orders);
+    if (availabilityError) {
+      return res.status(400).json({ error: availabilityError });
     }
 
-    const orders = readJson(ordersFile);
-    const orderId = uuidv4();
-
-    const campaignIndex = campaigns.findIndex((c) => c.slug === campaignSlug);
-    campaigns[campaignIndex].reservedNumbers = addNumbers(
-      campaigns[campaignIndex].reservedNumbers,
-      cleanNumbers
-    );
-    writeJson(campaignsFile, campaigns);
+    const orderId = `order_${Date.now()}_${uuidv4().slice(0, 8)}`;
+    const unitPrice = Number(campaign.pricePerNumber || 0);
+    const totalAmount = Number((unitPrice * cleanNumbers.length).toFixed(2));
 
     const orderBase = {
       id: orderId,
-      campaignId: campaign.id,
-      campaignSlug: campaign.slug,
+      campaignSlug,
       customer: {
-        name: customer.name,
-        phone: customer.phone,
+        name: customerName,
+        phone: customerPhone,
       },
       selectedNumbers: cleanNumbers,
-      amount: Number(amount || cleanNumbers.length * Number(campaign.pricePerNumber || 0)),
-      status: "reserved",
+      amount: totalAmount,
+      unitPrice,
+      status: "pending",
+      statusDetail: "checkout_created",
+      mpPreferenceId: null,
+      mpPaymentId: null,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      approvedAt: null,
+      paymentDetails: null,
     };
 
-    if (!process.env.MP_ACCESS_TOKEN) {
-      orders.unshift({
-        ...orderBase,
-        status: "pending_mp",
-      });
-      writeJson(ordersFile, orders);
-
-      return res.json({
-        mode: "demo",
-        orderId,
-        status: "pending_mp",
-        qr_code: "CONFIGURE_O_ACCESS_TOKEN_DO_MERCADO_PAGO",
-        qr_code_base64: null,
-        ticket_url: null,
-      });
-    }
-
-    const payment = await paymentClient.create({
+    const preference = await preferenceClient.create({
       body: {
-        transaction_amount: Number(orderBase.amount),
-        description: `${campaign.siteName || "Casa Premiada Ribeirão"} - ${campaign.title} - Números: ${cleanNumbers.join(", ")}`,
-        payment_method_id: "pix",
         external_reference: orderId,
-        notification_url: process.env.WEBHOOK_BASE_URL
-          ? `${process.env.WEBHOOK_BASE_URL}/api/webhook`
-          : undefined,
+        items: [
+          {
+            id: campaignSlug,
+            title: `${campaign.siteName || "Casa Premiada Ribeirão"} - ${campaign.title}`,
+            description: `Números: ${cleanNumbers.join(", ")}`,
+            quantity: 1,
+            currency_id: "BRL",
+            unit_price: totalAmount,
+          },
+        ],
         payer: {
+          name: customerName,
           email: "administrativo.solucoes.rn@gmail.com",
-          first_name: customer.name,
         },
         metadata: {
           campaignSlug,
           selectedNumbers: cleanNumbers,
-          phone: customer.phone || "",
+          phone: customerPhone,
+          customerName,
         },
+        notification_url: process.env.WEBHOOK_BASE_URL
+          ? `${process.env.WEBHOOK_BASE_URL}/api/webhook`
+          : undefined,
+        back_urls: {
+          success: `${process.env.FRONTEND_URL}/pagamento/sucesso`,
+          pending: `${process.env.FRONTEND_URL}/pagamento/pendente`,
+          failure: `${process.env.FRONTEND_URL}/pagamento/falha`,
+        },
+        auto_return: "approved",
       },
       requestOptions: {
         idempotencyKey: uuidv4(),
       },
     });
 
-    orders.unshift({
+    const createdOrder = {
       ...orderBase,
-      status: payment.status || "pending",
-      mpPaymentId: payment.id,
-      paymentDetails: {
-        id: payment.id,
-        status: payment.status,
-        status_detail: payment.status_detail || null,
-      },
-    });
-    writeJson(ordersFile, orders);
+      mpPreferenceId: preference.id || null,
+      checkoutUrl: preference.init_point || null,
+      checkoutSandboxUrl: preference.sandbox_init_point || null,
+    };
+
+    saveOrderAndCampaignStatus(createdOrder);
 
     return res.json({
-      mode: "mercadopago",
-      orderId,
-      status: payment.status,
-      qr_code: payment?.point_of_interaction?.transaction_data?.qr_code || "",
-      qr_code_base64:
-        payment?.point_of_interaction?.transaction_data?.qr_code_base64 || null,
-      ticket_url:
-        payment?.point_of_interaction?.transaction_data?.ticket_url || null,
+      orderId: createdOrder.id,
+      preferenceId: preference.id,
+      init_point: preference.init_point,
+      sandbox_init_point: preference.sandbox_init_point,
     });
   } catch (error) {
-    console.error(error);
+    console.error("Erro ao criar Checkout Pro:", error);
     return res.status(500).json({
-      error: "Falha ao gerar Pix.",
-      details: error?.message || "Erro interno",
+      error: "Falha ao criar Checkout Pro.",
+      detail: error?.message || "Erro interno.",
     });
   }
 });
 
+/**
+ * ORDER STATUS
+ */
+app.get("/api/orders/:orderId/status", (req, res) => {
+  const orders = readOrders();
+  const order = orders.find((o) => o.id === req.params.orderId);
+
+  if (!order) {
+    return res.status(404).json({ error: "Pedido não encontrado." });
+  }
+
+  return res.json({
+    id: order.id,
+    status: order.status,
+    statusDetail: order.statusDetail,
+    approvedAt: order.approvedAt,
+    mpPaymentId: order.mpPaymentId,
+  });
+});
+
+/**
+ * WEBHOOK
+ */
 app.post("/api/webhook", async (req, res) => {
   try {
-    console.log("Webhook recebido:", JSON.stringify(req.body, null, 2));
-
     const body = req.body || {};
+    console.log("Webhook recebido:", JSON.stringify(body));
+
     const paymentId =
       body?.data?.id ||
       body?.resource?.id ||
-      body?.id ||
       req.query["data.id"] ||
       req.query.id;
 
-    const topic = body?.type || body?.topic || req.query.type || req.query.topic;
+    const type =
+      body?.type ||
+      body?.topic ||
+      req.query.type ||
+      req.query.topic;
 
-    if (!paymentId) {
+    if (!paymentId || (type !== "payment" && type !== "merchant_order")) {
       return res.sendStatus(200);
     }
 
-    if (topic && topic !== "payment") {
-      return res.sendStatus(200);
-    }
+    const payment = await paymentClient.get({ id: String(paymentId) });
 
-    if (!process.env.MP_ACCESS_TOKEN) {
-      return res.sendStatus(200);
-    }
-
-    const payment = await fetchMercadoPagoPayment(paymentId);
-
-    const paymentStatus = String(payment?.status || "").toLowerCase();
-    const externalReference = payment?.external_reference || "";
-    const mpPaymentId = payment?.id || paymentId;
-
-    const result = saveOrderAndCampaignStatus({
-      mpPaymentId,
-      externalReference,
-      paymentStatus,
-      paymentRaw: payment,
-    });
-
-    if (!result.updated) {
-      console.warn("Webhook processado sem atualização:", result.reason);
+    if (payment && isPaidStatus(payment.status)) {
+      await markOrderPaidFromPayment(payment);
+      console.log("Pagamento aprovado:", payment.id, payment.external_reference);
     } else {
-      console.log(
-        `Pedido atualizado com sucesso. status=${paymentStatus} mpPaymentId=${mpPaymentId}`
-      );
+      console.log("Pagamento ainda não aprovado:", paymentId, payment?.status);
     }
 
     return res.sendStatus(200);
-  } catch (err) {
-    console.error("Erro no webhook:", err?.message || err);
-    return res.sendStatus(500);
+  } catch (error) {
+    console.error("Erro no webhook:", error);
+    return res.sendStatus(200);
   }
 });
 
+/**
+ * OPTIONAL: RETURN PAGES
+ */
+app.get("/pagamento/sucesso", (_req, res) => {
+  if (fs.existsSync(frontendDist)) {
+    return res.sendFile(path.join(frontendDist, "index.html"));
+  }
+  return res.send("Pagamento aprovado.");
+});
+
+app.get("/pagamento/pendente", (_req, res) => {
+  if (fs.existsSync(frontendDist)) {
+    return res.sendFile(path.join(frontendDist, "index.html"));
+  }
+  return res.send("Pagamento pendente.");
+});
+
+app.get("/pagamento/falha", (_req, res) => {
+  if (fs.existsSync(frontendDist)) {
+    return res.sendFile(path.join(frontendDist, "index.html"));
+  }
+  return res.send("Pagamento não concluído.");
+});
+
+/**
+ * SPA FALLBACK
+ */
+if (fs.existsSync(frontendDist)) {
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/")) return next();
+    return res.sendFile(path.join(frontendDist, "index.html"));
+  });
+}
+
 app.listen(port, () => {
-  console.log(`API rodando em http://localhost:${port}`);
+  console.log(`Servidor rodando na porta ${port}`);
 });
