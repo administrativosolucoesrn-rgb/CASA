@@ -3,27 +3,19 @@
     "id": "campanha-airfryer",
     "slug": "air-fryer",
     "title": "Air Fryer",
-    "siteName": "CASAPREMIADARIBEIRAO",
+    "siteName": "Casa Premiada Ribeirão",
     "description": "Concorra a uma Air Fryer comprando seus números.",
-    "pricePerNumber": 2.0,
-    "rangeStart": 150,
-    "rangeEnd": 500,
+    "pricePerNumber": 2,
+    "totalNumbers": 500,
     "drawDate": "2026-05-10",
-    "coverImage": "https://images.unsplash.com/photo-1585515656973-94f55f7fcef9?auto=format&fit=crop&w=900&q=80",
-    "theme": {
-      "primary": "#b40019",
-      "secondary": "#ffffff",
-      "accent": "#d4af37"
-    },
-    "reservedNumbers": [
-      152,
-      168,
-      201
-    ],
-    "paidNumbers": [
-      155,
-      170,
-      199
-    ]
+    "imageUrl": "https://images.unsplash.com/photo-1585515656973-94f55f7fcef9?auto=format&fit=crop&w=900&q=80",
+    "logoUrl": "",
+    "company": "CASAPREMIADARIBEIRAO",
+    "organizerPhone": "16999999999",
+    "whatsapp": "5516999999999",
+    "shortDescription": "Concorra a uma Air Fryer comprando seus números.",
+    "active": true,
+    "reservedNumbers": [152, 168, 201],
+    "paidNumbers": [155, 170, 199]
   }
 ]
