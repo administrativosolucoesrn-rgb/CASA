@@ -107,6 +107,8 @@ function PublicCampaign({ campaign }) {
         ? prev.filter((x) => x !== n)
         : [...prev, n].sort((a, b) => a - b)
     );
+
+    setShowScrollButton(false);
   };
 
   const randomAdd = (qty) => {
@@ -120,10 +122,14 @@ function PublicCampaign({ campaign }) {
     setSelected((prev) =>
       [...new Set([...prev, ...chosen])].sort((a, b) => a - b)
     );
+
+    setShowScrollButton(false);
   };
 
   const clearCart = () => {
     setSelected([]);
+    setShowScrollButton(true);
+    setStep("grid");
   };
 
   const createPix = async () => {
@@ -189,13 +195,14 @@ function PublicCampaign({ campaign }) {
     function onScroll() {
       if (!numbersRef.current) return;
       const rect = numbersRef.current.getBoundingClientRect();
-      setShowScrollButton(rect.top > 140);
+      const hasSelection = selected.length > 0;
+      setShowScrollButton(rect.top > 140 && !hasSelection);
     }
 
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [selected]);
 
   const organizerPhone = normalizePhone(
     campaign.organizerPhone || campaign.whatsapp || "16999999999"
@@ -403,9 +410,9 @@ function PublicCampaign({ campaign }) {
           padding: 15px;
           font-size: 15px;
           font-weight: 900;
-          background: linear-gradient(180deg, #fff3f6 0%, #ffe6ec 100%);
-          color: #980018;
-          box-shadow: inset 0 0 0 1px rgba(152,0,24,0.08);
+          background: linear-gradient(180deg, #25d366 0%, #139648 100%);
+          color: #ffffff;
+          box-shadow: 0 10px 22px rgba(37,211,102,0.22);
         }
 
         .moreInfoContent {
@@ -805,7 +812,7 @@ function PublicCampaign({ campaign }) {
         .whatsBtn {
           border: none;
           color: #fff;
-          background: linear-gradient(180deg, #25d366 0%, #17a74d 100%);
+          background: linear-gradient(180deg, #25d366 0%, #139648 100%);
           box-shadow: 0 10px 22px rgba(37,211,102,0.22);
         }
 
@@ -822,14 +829,14 @@ function PublicCampaign({ campaign }) {
           bottom: 18px;
           z-index: 60;
           border: none;
-          background: linear-gradient(180deg, #e0b129 0%, #c89410 100%);
-          color: #432d00;
+          background: linear-gradient(180deg, #25d366 0%, #139648 100%);
+          color: #ffffff;
           font-weight: 900;
           font-size: 16px;
           min-height: 54px;
           padding: 0 20px;
           border-radius: 999px;
-          box-shadow: 0 16px 30px rgba(200,148,16,0.28);
+          box-shadow: 0 16px 30px rgba(37,211,102,0.28);
           display: inline-flex;
           align-items: center;
           gap: 10px;
@@ -839,6 +846,12 @@ function PublicCampaign({ campaign }) {
         .scrollNumbersBtn span {
           font-size: 22px;
           line-height: 1;
+        }
+
+        .qrPage {
+          min-height: calc(100vh - 24px);
+          display: flex;
+          align-items: flex-start;
         }
 
         .qrImage {
@@ -960,245 +973,335 @@ function PublicCampaign({ campaign }) {
       `}</style>
 
       <div className="wrapper">
-        <header className="hero">
-          <div className="heroTop">
-            <div className="brandBox">
-              <div className="logoWrap">
-                <img
-                  src={
-                    campaign.logoImage ||
-                    "https://via.placeholder.com/80x80?text=CP"
-                  }
-                  alt="Logo"
-                  onError={(e) => {
-                    e.currentTarget.src =
-                      "https://via.placeholder.com/80x80?text=CP";
-                  }}
-                />
-              </div>
-
-              <div className="brandName">
-                {campaign.siteName || "Casa Premiada Ribeirão"}
-              </div>
-            </div>
-          </div>
-
-          <div className="heroImageWrap">
-            <div className="heroImageCard">
-              <img
-                src={campaign.coverImage}
-                alt={campaign.title}
-                className="heroImg"
-                onError={(e) => {
-                  e.currentTarget.src =
-                    "https://via.placeholder.com/900x600?text=Premio";
-                }}
-              />
-
-              <div className="imageMetaBar">
-                <div className="metaItem">
-                  <span>Valor por número</span>
-                  <strong>{formatMoney(campaign.pricePerNumber)}</strong>
-                </div>
-
-                <div className="metaItem">
-                  <span>Data</span>
-                  <strong>{campaign.drawDate || "A definir"}</strong>
-                </div>
-
-                <div className="metaItem">
-                  <span>Empresa</span>
-                  <strong>{campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}</strong>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="heroInfo">
-            <h1>{campaign.title || "Prêmio especial"}</h1>
-
-            <p className="heroDesc">
-              {campaign.shortDescription ||
-                campaign.description ||
-                "Participe agora e escolha seus números da sorte."}
-            </p>
-          </div>
-        </header>
-
-        {step === "grid" && (
+        {step !== "pix" && (
           <>
-            <section className="card">
-              <button
-                className="moreInfoButton"
-                onClick={() => setShowMoreInfo((prev) => !prev)}
-                type="button"
-              >
-                {showMoreInfo ? "Ocultar informações" : "Ver mais informações"}
-              </button>
-
-              {showMoreInfo && (
-                <div className="moreInfoContent">
-                  <div className="contactLine">
-                    <strong>Descrição</strong>
+            <header className="hero">
+              <div className="heroTop">
+                <div className="brandBox">
+                  <div className="logoWrap">
+                    <img
+                      src={
+                        campaign.logoImage ||
+                        "https://via.placeholder.com/80x80?text=CP"
+                      }
+                      alt="Logo"
+                      onError={(e) => {
+                        e.currentTarget.src =
+                          "https://via.placeholder.com/80x80?text=CP";
+                      }}
+                    />
                   </div>
 
-                  <div className="contactLine">
-                    {campaign.description || "Depois eu preencho."}
-                  </div>
-
-                  <div className="contactLine" style={{ marginTop: 12 }}>
-                    <strong>Empresa</strong>
-                  </div>
-
-                  <div className="contactLine">
-                    {campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}
-                  </div>
-
-                  <div className="contactLine">
-                    {campaign.organizerPhone || "(16) 99999-9999"}
-                  </div>
-
-                  <div className="secondaryActions">
-                    <a
-                      href={whatsappUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="whatsBtn"
-                    >
-                      WhatsApp
-                    </a>
-
-                    <button
-                      className="miniBtn"
-                      onClick={copyLink}
-                      type="button"
-                    >
-                      Copiar link
-                    </button>
-                  </div>
-
-                  <div className="secondaryActions">
-                    <button
-                      className="outlineBtn"
-                      onClick={shareLink}
-                      type="button"
-                    >
-                      Compartilhar
-                    </button>
+                  <div className="brandName">
+                    {campaign.siteName || "Casa Premiada Ribeirão"}
                   </div>
                 </div>
-              )}
-            </section>
-
-            <section className="card">
-              <h3>Compras rápidas</h3>
-              <div className="muted">
-                Adicione números aleatórios com um toque.
               </div>
 
-              <div className="quickButtons">
-                {[2, 5, 10, 20].map((n) => (
+              <div className="heroImageWrap">
+                <div className="heroImageCard">
+                  <img
+                    src={campaign.coverImage}
+                    alt={campaign.title}
+                    className="heroImg"
+                    onError={(e) => {
+                      e.currentTarget.src =
+                        "https://via.placeholder.com/900x600?text=Premio";
+                    }}
+                  />
+
+                  <div className="imageMetaBar">
+                    <div className="metaItem">
+                      <span>Valor por número</span>
+                      <strong>{formatMoney(campaign.pricePerNumber)}</strong>
+                    </div>
+
+                    <div className="metaItem">
+                      <span>Data</span>
+                      <strong>{campaign.drawDate || "A definir"}</strong>
+                    </div>
+
+                    <div className="metaItem">
+                      <span>Empresa</span>
+                      <strong>{campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="heroInfo">
+                <h1>{campaign.title || "Prêmio especial"}</h1>
+
+                <p className="heroDesc">
+                  {campaign.shortDescription ||
+                    campaign.description ||
+                    "Participe agora e escolha seus números da sorte."}
+                </p>
+              </div>
+            </header>
+
+            {step === "grid" && (
+              <>
+                <section className="card">
                   <button
-                    key={n}
-                    className="quickBtn"
-                    onClick={() => randomAdd(n)}
+                    className="moreInfoButton"
+                    onClick={() => setShowMoreInfo((prev) => !prev)}
                     type="button"
                   >
-                    +{n}
+                    {showMoreInfo ? "Ocultar informações" : "Ver mais informações"}
                   </button>
-                ))}
-              </div>
-            </section>
 
-            <section className="card" ref={numbersRef}>
-              <div className="chooseBanner">
-                <div className="chooseArrow">↓</div>
-                <div>
-                  <strong>Escolher números</strong>
+                  {showMoreInfo && (
+                    <div className="moreInfoContent">
+                      <div className="contactLine">
+                        <strong>Descrição</strong>
+                      </div>
+
+                      <div className="contactLine">
+                        {campaign.description || "Depois eu preencho."}
+                      </div>
+
+                      <div className="contactLine" style={{ marginTop: 12 }}>
+                        <strong>Empresa</strong>
+                      </div>
+
+                      <div className="contactLine">
+                        {campaign.company || campaign.siteName || "Casa Premiada Ribeirão"}
+                      </div>
+
+                      <div className="contactLine">
+                        {campaign.organizerPhone || "(16) 99999-9999"}
+                      </div>
+
+                      <div className="secondaryActions">
+                        <a
+                          href={whatsappUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="whatsBtn"
+                        >
+                          WhatsApp
+                        </a>
+
+                        <button
+                          className="miniBtn"
+                          onClick={copyLink}
+                          type="button"
+                        >
+                          Copiar link
+                        </button>
+                      </div>
+
+                      <div className="secondaryActions">
+                        <button
+                          className="outlineBtn"
+                          onClick={shareLink}
+                          type="button"
+                        >
+                          Compartilhar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section className="card">
+                  <h3>Compras rápidas</h3>
                   <div className="muted">
-                    Toque nos números disponíveis
+                    Adicione números aleatórios com um toque.
+                  </div>
+
+                  <div className="quickButtons">
+                    {[2, 5, 10, 20].map((n) => (
+                      <button
+                        key={n}
+                        className="quickBtn"
+                        onClick={() => randomAdd(n)}
+                        type="button"
+                      >
+                        +{n}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="card" ref={numbersRef}>
+                  <div className="chooseBanner">
+                    <div className="chooseArrow">↓</div>
+                    <div>
+                      <strong>Escolher números</strong>
+                      <div className="muted">
+                        Toque nos números disponíveis
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="legend">
+                    <span><i className="dot available"></i>Disponível</span>
+                    <span><i className="dot reserved"></i>Reservado</span>
+                    <span><i className="dot paid"></i>Pago</span>
+                    <span><i className="dot selected"></i>Selecionado</span>
+                  </div>
+
+                  <div className="gridNumbers">
+                    {allNumbers.map((n) => {
+                      const status = getStatus(n);
+                      const isSelected = selected.includes(n);
+
+                      return (
+                        <button
+                          key={n}
+                          className={`numberCard ${status} ${isSelected ? "selected" : ""}`}
+                          onClick={() => toggle(n)}
+                          type="button"
+                        >
+                          <strong>{pad(n)}</strong>
+                          <small>
+                            {isSelected
+                              ? "Selecionado"
+                              : status === "available"
+                              ? "Livre"
+                              : status === "reserved"
+                              ? "Reservado"
+                              : "Pago"}
+                          </small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {selected.length > 0 && (
+                  <section className="selectedSheet">
+                    <div className="selectedHeader">
+                      <h3>Números selecionados</h3>
+                      <div className="chip" style={{ cursor: "default" }}>
+                        {selected.length} item(ns)
+                      </div>
+                    </div>
+
+                    <div className="chips">
+                      {selected.map((n) => (
+                        <button
+                          key={n}
+                          className="chip"
+                          onClick={() => toggle(n)}
+                          type="button"
+                        >
+                          Nº {pad(n)} ✕
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="totalRow">
+                      <span>Total</span>
+                      <strong>{formatMoney(total)}</strong>
+                    </div>
+
+                    <div className="cartActions">
+                      <button
+                        className="outlineBtn"
+                        onClick={clearCart}
+                        type="button"
+                      >
+                        Limpar carrinho
+                      </button>
+
+                      <button
+                        className="primaryBtn"
+                        disabled={!selected.length}
+                        onClick={() => {
+                          if (customer.name && customer.phone) {
+                            createPix();
+                          } else {
+                            setStep("data");
+                          }
+                        }}
+                        type="button"
+                      >
+                        Continuar
+                      </button>
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
+
+            {step === "data" && (
+              <section className="card dataSheet">
+                <div className="dataHeader">
+                  <div className="dataBrand">
+                    <div className="dataLogoWrap">
+                      <img
+                        src={
+                          campaign.logoImage ||
+                          "https://via.placeholder.com/80x80?text=CP"
+                        }
+                        alt="Logo"
+                        onError={(e) => {
+                          e.currentTarget.src =
+                            "https://via.placeholder.com/80x80?text=CP";
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="dataMini">Finalizar reserva</div>
+                      <h2>Seus dados</h2>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="legend">
-                <span><i className="dot available"></i>Disponível</span>
-                <span><i className="dot reserved"></i>Reservado</span>
-                <span><i className="dot paid"></i>Pago</span>
-                <span><i className="dot selected"></i>Selecionado</span>
-              </div>
+                <div className="dataSummary">
+                  <div className="dataSummaryBox">
+                    <span>Quantidade</span>
+                    <strong>{selected.length}</strong>
+                  </div>
 
-              <div className="gridNumbers">
-                {allNumbers.map((n) => {
-                  const status = getStatus(n);
-                  const isSelected = selected.includes(n);
-
-                  return (
-                    <button
-                      key={n}
-                      className={`numberCard ${status} ${isSelected ? "selected" : ""}`}
-                      onClick={() => toggle(n)}
-                      type="button"
-                    >
-                      <strong>{pad(n)}</strong>
-                      <small>
-                        {isSelected
-                          ? "Selecionado"
-                          : status === "available"
-                          ? "Livre"
-                          : status === "reserved"
-                          ? "Reservado"
-                          : "Pago"}
-                      </small>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-
-            {selected.length > 0 && (
-              <section className="selectedSheet">
-                <div className="selectedHeader">
-                  <h3>Números selecionados</h3>
-                  <div className="chip" style={{ cursor: "default" }}>
-                    {selected.length} item(ns)
+                  <div className="dataSummaryBox totalHighlight">
+                    <span>Total</span>
+                    <strong>{formatMoney(total)}</strong>
                   </div>
                 </div>
 
                 <div className="chips">
                   {selected.map((n) => (
-                    <button
-                      key={n}
-                      className="chip"
-                      onClick={() => toggle(n)}
-                      type="button"
-                    >
-                      Nº {pad(n)} ✕
-                    </button>
+                    <span className="chip white" key={n}>
+                      Nº {pad(n)}
+                    </span>
                   ))}
                 </div>
 
-                <div className="totalRow">
-                  <span>Total</span>
-                  <strong>{formatMoney(total)}</strong>
-                </div>
+                <label>Nome completo</label>
+                <input
+                  value={customer.name}
+                  onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                  placeholder="Digite seu nome completo"
+                />
 
-                <div className="cartActions">
+                <label>Número / WhatsApp</label>
+                <input
+                  value={customer.phone}
+                  onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
+                  placeholder="Digite seu WhatsApp"
+                />
+
+                <div className="actions">
                   <button
                     className="outlineBtn"
-                    onClick={clearCart}
+                    onClick={() => setStep("grid")}
                     type="button"
                   >
-                    Limpar carrinho
+                    Voltar
                   </button>
 
                   <button
-                    className="primaryBtn"
-                    disabled={!selected.length}
-                    onClick={() => setStep("data")}
+                    className="successBtn"
+                    disabled={!customer.name || !customer.phone || loading}
+                    onClick={createPix}
                     type="button"
                   >
-                    Continuar
+                    {loading ? "Preparando pagamento..." : "Pagar"}
                   </button>
                 </div>
               </section>
@@ -1206,128 +1309,60 @@ function PublicCampaign({ campaign }) {
           </>
         )}
 
-        {step === "data" && (
-          <section className="card dataSheet">
-            <div className="dataHeader">
-              <div className="dataBrand">
-                <div className="dataLogoWrap">
-                  <img
-                    src={
-                      campaign.logoImage ||
-                      "https://via.placeholder.com/80x80?text=CP"
-                    }
-                    alt="Logo"
-                    onError={(e) => {
-                      e.currentTarget.src =
-                        "https://via.placeholder.com/80x80?text=CP";
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <div className="dataMini">Finalizar reserva</div>
-                  <h2>Seus dados</h2>
-                </div>
-              </div>
-            </div>
-
-            <div className="dataSummary">
-              <div className="dataSummaryBox">
-                <span>Quantidade</span>
-                <strong>{selected.length}</strong>
-              </div>
-
-              <div className="dataSummaryBox totalHighlight">
-                <span>Total</span>
-                <strong>{formatMoney(total)}</strong>
-              </div>
-            </div>
-
-            <div className="chips">
-              {selected.map((n) => (
-                <span className="chip white" key={n}>
-                  Nº {pad(n)}
-                </span>
-              ))}
-            </div>
-
-            <label>Nome completo</label>
-            <input
-              value={customer.name}
-              onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
-              placeholder="Digite seu nome completo"
-            />
-
-            <label>Número / WhatsApp</label>
-            <input
-              value={customer.phone}
-              onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
-              placeholder="Digite seu WhatsApp"
-            />
-
-            <div className="actions">
-              <button
-                className="outlineBtn"
-                onClick={() => setStep("grid")}
-                type="button"
-              >
-                Voltar
-              </button>
-
-              <button
-                className="successBtn"
-                disabled={!customer.name || !customer.phone || loading}
-                onClick={createPix}
-                type="button"
-              >
-                {loading ? "Preparando pagamento..." : "Pagar"}
-              </button>
-            </div>
-          </section>
-        )}
-
         {step === "pix" && (
-          <section className="card">
-            <h2>Pagamento via Pix</h2>
-            <p className="muted">
-              Finalize o pagamento para garantir seus números.
-            </p>
+          <div className="qrPage">
+            <section className="card" style={{ width: "100%" }}>
+              <h2>Pagamento</h2>
+              <p className="muted">
+                Finalize o pagamento para garantir seus números.
+              </p>
 
-            <div className="summary">
-              <div className="summaryRow">
-                <span>Status</span>
-                <strong>{pix?.status || "-"}</strong>
+              <div className="summary">
+                <div className="summaryRow">
+                  <span>Status</span>
+                  <strong>{pix?.status || "-"}</strong>
+                </div>
+
+                <div className="summaryRow">
+                  <span>Total</span>
+                  <strong className="green">{formatMoney(total)}</strong>
+                </div>
               </div>
 
-              <div className="summaryRow">
-                <span>Total</span>
-                <strong className="green">{formatMoney(total)}</strong>
+              {pix?.qr_code_base64 ? (
+                <img
+                  className="qrImage"
+                  src={`data:image/png;base64,${pix.qr_code_base64}`}
+                  alt="QR Code Pix"
+                />
+              ) : (
+                <div className="demoBox">
+                  Modo demonstração: configure o token do Mercado Pago no backend.
+                </div>
+              )}
+
+              <label>Pix copia e cola</label>
+              <textarea rows="6" readOnly value={pix?.qr_code || ""} />
+
+              <div className="actions">
+                <button
+                  className="outlineBtn"
+                  onClick={() => setStep("grid")}
+                  type="button"
+                >
+                  Voltar
+                </button>
+
+                <button
+                  className="successBtn"
+                  onClick={() => navigator.clipboard.writeText(pix?.qr_code || "")}
+                  type="button"
+                >
+                  Copiar código Pix
+                </button>
               </div>
-            </div>
-
-            {pix?.qr_code_base64 ? (
-              <img
-                className="qrImage"
-                src={`data:image/png;base64,${pix.qr_code_base64}`}
-                alt="QR Code Pix"
-              />
-            ) : (
-              <div className="demoBox">
-                Modo demonstração: configure o token do Mercado Pago no backend.
-              </div>
-            )}
-
-            <label>Pix copia e cola</label>
-            <textarea rows="6" readOnly value={pix?.qr_code || ""} />
-
-            <button
-              className="successBtn"
-              onClick={() => navigator.clipboard.writeText(pix?.qr_code || "")}
-              type="button"
-            >
-              Copiar código Pix
-            </button>
-          </section>
+            </section>
+          </div>
         )}
       </div>
 
