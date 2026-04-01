@@ -381,7 +381,7 @@ app.post("/api/create-pix", async (req, res) => {
           ? `${process.env.WEBHOOK_BASE_URL}/api/webhook`
           : undefined,
         payer: {
-          email: `cliente-${Date.now()}@casapremiada.local`,
+          email: "administrativo.solucoes.rn@gmail.com",
           first_name: customer.name,
         },
         metadata: {
