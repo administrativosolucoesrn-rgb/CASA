@@ -27,6 +27,7 @@ function PublicCampaign({ campaign }) {
   const [loading, setLoading] = useState(false);
   const [pix, setPix] = useState(null);
   const [showMoreInfo, setShowMoreInfo] = useState(false);
+  const [showScrollButton, setShowScrollButton] = useState(true);
 
   const [customer, setCustomer] = useState({
     name: "",
@@ -114,20 +115,48 @@ function PublicCampaign({ campaign }) {
   );
 
   const whatsappUrl = `https://wa.me/55${organizerPhone}?text=${encodeURIComponent(
-    `Olá! Quero informações sobre ${campaign.title || "a campanha"}.`
+    `Olá! Quero informações sobre ${campaign.title || "o sorteio"}.`
   )}`;
 
-  const totalNumbers = rangeEnd - rangeStart + 1;
-  const paidCount = campaign.paidNumbers?.length || 0;
-  const reservedCount = campaign.reservedNumbers?.length || 0;
-  const availableCount = Math.max(totalNumbers - paidCount - reservedCount, 0);
+  useEffect(() => {
+    const onScroll = () => {
+      const area = document.getElementById("area-numeros");
+      if (!area) return;
+
+      const rect = area.getBoundingClientRect();
+      setShowScrollButton(rect.top > 120);
+    };
+
+    onScroll();
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const handleChooseNumbers = () => {
+    const el = document.getElementById("area-numeros");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: campaign.title || "Casa Premiada Ribeirão",
+          text: "Escolha seus números",
+          url,
+        });
+      } else {
+        await navigator.clipboard.writeText(url);
+        alert("Link copiado.");
+      }
+    } catch {}
+  };
 
   return (
     <div className="page">
       <style>{`
-        * {
-          box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         html, body, #root {
           margin: 0;
@@ -135,14 +164,12 @@ function PublicCampaign({ campaign }) {
           min-height: 100%;
           font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           background:
-            radial-gradient(circle at top, rgba(212, 175, 55, 0.10), transparent 30%),
-            linear-gradient(180deg, #65000d 0%, #8d0012 38%, #a30017 100%);
-          color: #ffffff;
+            radial-gradient(circle at top, rgba(212,175,55,0.10), transparent 28%),
+            linear-gradient(180deg, #66000d 0%, #8f0013 38%, #a80018 100%);
+          color: #fff;
         }
 
-        body {
-          overflow-x: hidden;
-        }
+        body { overflow-x: hidden; }
 
         .page {
           min-height: 100vh;
@@ -151,116 +178,111 @@ function PublicCampaign({ campaign }) {
 
         .wrapper {
           width: 100%;
-          max-width: 540px;
+          max-width: 560px;
           margin: 0 auto;
         }
 
-        .hero {
-          position: relative;
+        .heroCard {
           overflow: hidden;
           border-radius: 26px;
           background:
-            linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04)),
-            linear-gradient(180deg, #b10019 0%, #7f0012 100%);
+            linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04)),
+            linear-gradient(180deg, #b10019 0%, #7d0012 100%);
           border: 1px solid rgba(255,255,255,0.12);
-          box-shadow:
-            0 20px 50px rgba(0,0,0,0.25),
-            inset 0 1px 0 rgba(255,255,255,0.07);
+          box-shadow: 0 20px 50px rgba(0,0,0,0.24);
           margin-bottom: 14px;
         }
 
-        .heroTop {
+        .heroHeader {
           display: flex;
           align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 14px 14px 0;
+          gap: 12px;
+          padding: 14px 14px 10px;
         }
 
-        .brandBox {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-        }
-
-        .logoWrap {
-          width: 48px;
-          height: 48px;
-          border-radius: 14px;
+        .logoBox {
+          width: 52px;
+          height: 52px;
+          border-radius: 16px;
+          overflow: hidden;
           background: rgba(255,255,255,0.12);
-          border: 1px solid rgba(255,255,255,0.15);
+          border: 1px solid rgba(255,255,255,0.14);
           display: flex;
           align-items: center;
           justify-content: center;
-          overflow: hidden;
           flex-shrink: 0;
         }
 
-        .logoWrap img {
+        .logoBox img {
           width: 100%;
           height: 100%;
           object-fit: cover;
           display: block;
         }
 
-        .brandText {
+        .siteTitle {
           min-width: 0;
-        }
-
-        .brandMini {
-          display: block;
-          font-size: 11px;
-          color: rgba(255,255,255,0.72);
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.4px;
-          margin-bottom: 2px;
-        }
-
-        .brandName {
-          font-size: 17px;
+          font-size: 22px;
           font-weight: 900;
           line-height: 1.1;
-          color: #fff;
-        }
-
-        .premiumBadge {
-          background: linear-gradient(135deg, #f6e29a, #d4af37);
-          color: #6b0012;
-          border-radius: 999px;
-          padding: 9px 12px;
-          font-size: 11px;
-          font-weight: 900;
-          white-space: nowrap;
-          box-shadow: 0 8px 20px rgba(0,0,0,0.18);
-          flex-shrink: 0;
         }
 
         .heroImageWrap {
-          padding: 12px 12px 0;
+          padding: 0 14px;
         }
 
         .heroImg {
           width: 100%;
-          height: 210px;
+          height: 340px;
           object-fit: cover;
           display: block;
-          border-radius: 20px;
+          border-radius: 24px;
           background: rgba(255,255,255,0.08);
-          box-shadow: 0 12px 24px rgba(0,0,0,0.18);
         }
 
-        .heroInfo {
+        .infoOverlay {
+          margin-top: -74px;
+          position: relative;
+          z-index: 2;
+          padding: 0 14px 0;
+        }
+
+        .infoOverlayInner {
+          background: linear-gradient(180deg, rgba(18,18,18,0.90), rgba(34,34,34,0.92));
+          border-radius: 0 0 22px 22px;
+          padding: 14px 12px 12px;
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 8px;
+        }
+
+        .overlayItem span {
+          display: block;
+          font-size: 10px;
+          color: rgba(255,255,255,0.72);
+          text-transform: uppercase;
+          font-weight: 800;
+          margin-bottom: 5px;
+          letter-spacing: 0.4px;
+        }
+
+        .overlayItem strong {
+          display: block;
+          color: #fff;
+          font-size: 14px;
+          line-height: 1.2;
+          word-break: break-word;
+        }
+
+        .heroBody {
           padding: 14px;
         }
 
-        .heroInfo h1 {
+        .heroBody h1 {
           margin: 0;
-          font-size: 25px;
+          font-size: 26px;
           line-height: 1.06;
           font-weight: 900;
-          letter-spacing: -0.3px;
         }
 
         .heroDesc {
@@ -268,75 +290,6 @@ function PublicCampaign({ campaign }) {
           color: rgba(255,255,255,0.87);
           font-size: 14px;
           line-height: 1.45;
-        }
-
-        .priceBar {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-          margin-top: 12px;
-        }
-
-        .priceCard {
-          background: rgba(255,255,255,0.10);
-          border: 1px solid rgba(255,255,255,0.12);
-          border-radius: 18px;
-          padding: 12px 12px;
-        }
-
-        .priceCard span {
-          display: block;
-          font-size: 11px;
-          color: rgba(255,255,255,0.72);
-          text-transform: uppercase;
-          font-weight: 800;
-          letter-spacing: 0.4px;
-          margin-bottom: 5px;
-        }
-
-        .priceCard strong {
-          display: block;
-          font-size: 21px;
-          color: #fff;
-          line-height: 1.1;
-        }
-
-        .heroActions {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-          margin-top: 12px;
-        }
-
-        .compactInfo {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 8px;
-          margin-top: 12px;
-        }
-
-        .compactInfoBox {
-          background: rgba(255,255,255,0.10);
-          border: 1px solid rgba(255,255,255,0.12);
-          border-radius: 16px;
-          padding: 10px 8px;
-          text-align: center;
-        }
-
-        .compactInfoBox span {
-          display: block;
-          font-size: 10px;
-          color: rgba(255,255,255,0.72);
-          font-weight: 800;
-          text-transform: uppercase;
-          margin-bottom: 5px;
-        }
-
-        .compactInfoBox strong {
-          display: block;
-          font-size: 13px;
-          color: #fff;
-          line-height: 1.15;
         }
 
         .card {
@@ -369,7 +322,6 @@ function PublicCampaign({ campaign }) {
           font-weight: 900;
           background: linear-gradient(180deg, #fff3f6 0%, #ffe6ec 100%);
           color: #980018;
-          box-shadow: inset 0 0 0 1px rgba(152,0,24,0.08);
         }
 
         .moreInfoContent {
@@ -402,11 +354,6 @@ function PublicCampaign({ campaign }) {
           color: white;
           background: linear-gradient(180deg, #d8aa23 0%, #b68606 100%);
           box-shadow: 0 10px 18px rgba(182,134,6,0.22);
-          transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-
-        .quickBtn:active {
-          transform: scale(0.98);
         }
 
         .chooseBanner {
@@ -493,10 +440,6 @@ function PublicCampaign({ campaign }) {
           font-weight: 700;
         }
 
-        .numberCard.available:hover {
-          transform: translateY(-1px);
-        }
-
         .numberCard.reserved {
           background: #fff6df;
           color: #8b5b00;
@@ -516,16 +459,10 @@ function PublicCampaign({ campaign }) {
           color: #fff;
           box-shadow: 0 10px 18px rgba(177,0,25,0.22);
           transform: scale(1.03);
-          animation: pulseSelect 0.22s ease;
         }
 
         .numberCard.selected small {
           color: rgba(255,255,255,0.88);
-        }
-
-        @keyframes pulseSelect {
-          0% { transform: scale(0.96); }
-          100% { transform: scale(1.03); }
         }
 
         .selectedSheet {
@@ -538,7 +475,6 @@ function PublicCampaign({ campaign }) {
           padding: 16px;
           box-shadow: 0 18px 34px rgba(0,0,0,0.22);
           margin-top: 14px;
-          border: 1px solid rgba(0,0,0,0.05);
         }
 
         .selectedHeader {
@@ -567,11 +503,6 @@ function PublicCampaign({ campaign }) {
           cursor: pointer;
         }
 
-        .chip.white {
-          background: #fff;
-          color: #8a5c00;
-        }
-
         .totalRow, .summaryRow {
           display: flex;
           align-items: center;
@@ -587,9 +518,7 @@ function PublicCampaign({ campaign }) {
           font-size: 18px;
         }
 
-        .green {
-          color: #0c8b3f !important;
-        }
+        .green { color: #0c8b3f !important; }
 
         .cartActions {
           display: grid;
@@ -616,11 +545,6 @@ function PublicCampaign({ campaign }) {
           background: #fff;
         }
 
-        input:focus, textarea:focus {
-          border-color: #b10019;
-          box-shadow: 0 0 0 4px rgba(177,0,25,0.08);
-        }
-
         .summary {
           background: #fff9ef;
           border: 1px solid #f2e2b8;
@@ -640,7 +564,8 @@ function PublicCampaign({ campaign }) {
         .outlineBtn,
         .successBtn,
         .whatsBtn,
-        .miniLink {
+        .shareBtn,
+        .floatingChooseBtn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -652,20 +577,14 @@ function PublicCampaign({ campaign }) {
           font-weight: 900;
           text-decoration: none;
           cursor: pointer;
-          transition: transform 0.15s ease;
+          border: none;
         }
 
-        .primaryBtn {
-          border: none;
+        .primaryBtn,
+        .floatingChooseBtn {
           color: #fff;
           background: linear-gradient(180deg, #b10019 0%, #850013 100%);
           box-shadow: 0 10px 22px rgba(177,0,25,0.22);
-        }
-
-        .primaryBtn:disabled {
-          opacity: 0.55;
-          cursor: not-allowed;
-          box-shadow: none;
         }
 
         .outlineBtn {
@@ -675,17 +594,36 @@ function PublicCampaign({ campaign }) {
         }
 
         .successBtn {
-          border: none;
           color: #fff;
           background: linear-gradient(180deg, #11a84d 0%, #087c37 100%);
           box-shadow: 0 10px 22px rgba(17,168,77,0.22);
         }
 
         .whatsBtn {
-          border: none;
           color: #fff;
           background: linear-gradient(180deg, #25d366 0%, #17a74d 100%);
           box-shadow: 0 10px 22px rgba(37,211,102,0.22);
+        }
+
+        .shareBtn {
+          color: #8a5c00;
+          background: #fff8e7;
+          border: 1px solid #f2e2b8;
+        }
+
+        .floatingChooseWrap {
+          position: fixed;
+          left: 50%;
+          transform: translateX(-50%);
+          bottom: 18px;
+          z-index: 55;
+          width: calc(100% - 24px);
+          max-width: 540px;
+        }
+
+        .floatingChooseBtn {
+          min-height: 56px;
+          border-radius: 18px;
         }
 
         .qrImage {
@@ -706,6 +644,24 @@ function PublicCampaign({ campaign }) {
           font-weight: 700;
           margin: 14px 0;
           border: 1px solid #f0d284;
+        }
+
+        .floatingWhats {
+          position: fixed;
+          right: 14px;
+          bottom: 86px;
+          z-index: 56;
+          width: 56px;
+          height: 56px;
+          border-radius: 50%;
+          text-decoration: none;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 24px;
+          color: white;
+          background: linear-gradient(180deg, #25d366 0%, #139648 100%);
+          box-shadow: 0 16px 30px rgba(37,211,102,0.25);
         }
 
         .adminWrap {
@@ -757,115 +713,53 @@ function PublicCampaign({ campaign }) {
         }
 
         .miniLink {
-          width: auto;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 44px;
           padding: 0 16px;
           background: #fff8e7;
           color: #8a5c00;
           border: 1px solid #f2e2b8;
-          min-height: 44px;
-        }
-
-        .smallBtn {
-          width: auto;
-          padding: 0 16px;
-          min-height: 44px;
-        }
-
-        .floatingWhats {
-          position: fixed;
-          right: 14px;
-          bottom: 14px;
-          z-index: 50;
-          width: 56px;
-          height: 56px;
-          border-radius: 50%;
-          border: none;
+          border-radius: 14px;
           text-decoration: none;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 24px;
-          color: white;
-          background: linear-gradient(180deg, #25d366 0%, #139648 100%);
-          box-shadow: 0 16px 30px rgba(37,211,102,0.25);
+          font-weight: 900;
         }
 
         @media (max-width: 640px) {
-          .page {
-            padding: 10px 9px 120px;
-          }
-
-          .adminGrid {
-            grid-template-columns: 1fr;
-          }
+          .adminGrid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 430px) {
-          .gridNumbers {
-            grid-template-columns: repeat(5, 1fr);
-          }
-
-          .quickButtons {
-            grid-template-columns: repeat(4, 1fr);
-          }
-
-          .compactInfo {
-            grid-template-columns: repeat(3, 1fr);
-          }
-
-          .priceBar {
-            grid-template-columns: 1fr 1fr;
-          }
+          .gridNumbers { grid-template-columns: repeat(5, 1fr); }
+          .quickButtons { grid-template-columns: repeat(4, 1fr); }
+          .infoOverlayInner { grid-template-columns: repeat(3, 1fr); }
         }
 
         @media (max-width: 390px) {
-          .gridNumbers {
-            grid-template-columns: repeat(4, 1fr);
-          }
-
-          .cartActions,
-          .actions,
-          .heroActions {
-            grid-template-columns: 1fr;
-          }
-
-          .compactInfo {
-            grid-template-columns: 1fr;
-          }
-
-          .priceBar {
-            grid-template-columns: 1fr;
-          }
+          .heroImg { height: 300px; }
+          .gridNumbers { grid-template-columns: repeat(4, 1fr); }
+          .cartActions, .actions { grid-template-columns: 1fr; }
+          .infoOverlayInner { grid-template-columns: 1fr; }
         }
       `}</style>
 
       <div className="wrapper">
-        <header className="hero">
-          <div className="heroTop">
-            <div className="brandBox">
-              <div className="logoWrap">
-                <img
-                  src={
-                    campaign.logoImage ||
-                    "https://via.placeholder.com/80x80?text=CP"
-                  }
-                  alt="Logo"
-                  onError={(e) => {
-                    e.currentTarget.src =
-                      "https://via.placeholder.com/80x80?text=CP";
-                  }}
-                />
-              </div>
-
-              <div className="brandText">
-                <span className="brandMini">Organização</span>
-                <div className="brandName">
-                  {campaign.siteName || "Casa Premiada Ribeirão"}
-                </div>
-              </div>
+        <header className="heroCard">
+          <div className="heroHeader">
+            <div className="logoBox">
+              <img
+                src={campaign.logoImage || "https://via.placeholder.com/80x80?text=CP"}
+                alt="Logo"
+                onError={(e) => {
+                  e.currentTarget.src = "https://via.placeholder.com/80x80?text=CP";
+                }}
+              />
             </div>
 
-            <div className="premiumBadge">Premium</div>
+            <div className="siteTitle">
+              {campaign.siteName || "Casa Premiada Ribeirão"}
+            </div>
           </div>
 
           <div className="heroImageWrap">
@@ -875,70 +769,37 @@ function PublicCampaign({ campaign }) {
               className="heroImg"
               onError={(e) => {
                 e.currentTarget.src =
-                  "https://via.placeholder.com/900x600?text=Premio";
+                  "https://via.placeholder.com/900x700?text=Premio";
               }}
             />
           </div>
 
-          <div className="heroInfo">
-            <h1>{campaign.title || "Prêmio especial"}</h1>
-
-            <p className="heroDesc">
-              {campaign.shortDescription ||
-                campaign.description ||
-                "Participe agora e escolha seus números da sorte."}
-            </p>
-
-            <div className="priceBar">
-              <div className="priceCard">
+          <div className="infoOverlay">
+            <div className="infoOverlayInner">
+              <div className="overlayItem">
                 <span>Valor por número</span>
                 <strong>{formatMoney(campaign.pricePerNumber)}</strong>
               </div>
 
-              <div className="priceCard">
-                <span>Sorteio</span>
+              <div className="overlayItem">
+                <span>Data</span>
                 <strong>{campaign.drawDate || "A definir"}</strong>
               </div>
-            </div>
 
-            <div className="heroActions">
-              <button
-                className="primaryBtn"
-                onClick={() => {
-                  const el = document.getElementById("area-numeros");
-                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-                }}
-                type="button"
-              >
-                Escolher números
-              </button>
-
-              <a
-                href={whatsappUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="whatsBtn"
-              >
-                WhatsApp
-              </a>
-            </div>
-
-            <div className="compactInfo">
-              <div className="compactInfoBox">
-                <span>Organizador</span>
-                <strong>{campaign.organizer || "Casa Premiada Ribeirão"}</strong>
-              </div>
-
-              <div className="compactInfoBox">
-                <span>Disponíveis</span>
-                <strong>{availableCount}</strong>
-              </div>
-
-              <div className="compactInfoBox">
-                <span>Pagos</span>
-                <strong>{paidCount}</strong>
+              <div className="overlayItem">
+                <span>Empresa</span>
+                <strong>{campaign.siteName || "Casa Premiada Ribeirão"}</strong>
               </div>
             </div>
+          </div>
+
+          <div className="heroBody">
+            <h1>{campaign.title || "Prêmio especial"}</h1>
+            <p className="heroDesc">
+              {campaign.shortDescription ||
+                campaign.description ||
+                "Escolha seus números e participe."}
+            </p>
           </div>
         </header>
 
@@ -956,7 +817,7 @@ function PublicCampaign({ campaign }) {
               {showMoreInfo && (
                 <div className="moreInfoContent">
                   <div className="contactLine">
-                    <strong>Descrição da rifa</strong>
+                    <strong>Descrição</strong>
                   </div>
 
                   <div className="contactLine">
@@ -964,11 +825,11 @@ function PublicCampaign({ campaign }) {
                   </div>
 
                   <div className="contactLine" style={{ marginTop: 12 }}>
-                    <strong>Contato do organizador</strong>
+                    <strong>Empresa</strong>
                   </div>
 
                   <div className="contactLine">
-                    {campaign.organizer || "Casa Premiada Ribeirão"}
+                    {campaign.siteName || "Casa Premiada Ribeirão"}
                   </div>
 
                   <div className="contactLine">
@@ -982,8 +843,17 @@ function PublicCampaign({ campaign }) {
                     className="whatsBtn"
                     style={{ marginTop: 12 }}
                   >
-                    Chamar no WhatsApp
+                    WhatsApp
                   </a>
+
+                  <button
+                    className="shareBtn"
+                    style={{ marginTop: 10 }}
+                    onClick={handleShare}
+                    type="button"
+                  >
+                    Compartilhar link
+                  </button>
                 </div>
               )}
             </section>
@@ -1013,9 +883,7 @@ function PublicCampaign({ campaign }) {
                 <div className="chooseArrow">↓</div>
                 <div>
                   <strong>Escolher números</strong>
-                  <div className="muted">
-                    Toque nos números disponíveis
-                  </div>
+                  <div className="muted">Toque nos números disponíveis</div>
                 </div>
               </div>
 
@@ -1082,11 +950,7 @@ function PublicCampaign({ campaign }) {
                 </div>
 
                 <div className="cartActions">
-                  <button
-                    className="outlineBtn"
-                    onClick={clearCart}
-                    type="button"
-                  >
+                  <button className="outlineBtn" onClick={clearCart} type="button">
                     Limpar carrinho
                   </button>
 
@@ -1111,7 +975,7 @@ function PublicCampaign({ campaign }) {
             <div className="summary">
               <div className="chips">
                 {selected.map((n) => (
-                  <span className="chip white" key={n}>
+                  <span className="chip" key={n}>
                     Nº {pad(n)}
                   </span>
                 ))}
@@ -1176,9 +1040,7 @@ function PublicCampaign({ campaign }) {
         {step === "pix" && (
           <section className="card">
             <h2>Pagamento via Pix</h2>
-            <p className="muted">
-              Finalize o pagamento para garantir seus números.
-            </p>
+            <p className="muted">Finalize o pagamento para garantir seus números.</p>
 
             <div className="summary">
               <div className="summaryRow">
@@ -1218,6 +1080,18 @@ function PublicCampaign({ campaign }) {
         )}
       </div>
 
+      {showScrollButton && step === "grid" && (
+        <div className="floatingChooseWrap">
+          <button
+            className="floatingChooseBtn"
+            onClick={handleChooseNumbers}
+            type="button"
+          >
+            ↓ Escolher números
+          </button>
+        </div>
+      )}
+
       <a
         href={whatsappUrl}
         target="_blank"
@@ -1244,7 +1118,6 @@ function AdminPanel() {
     slug: "",
     description: "",
     shortDescription: "",
-    organizer: "Casa Premiada Ribeirão",
     organizerPhone: "",
     whatsapp: "",
     logoImage: "",
@@ -1253,11 +1126,6 @@ function AdminPanel() {
     rangeEnd: 300,
     drawDate: "",
     coverImage: "",
-    theme: {
-      primary: "#b10019",
-      secondary: "#ffffff",
-      accent: "#d4af37",
-    },
   });
 
   const headers = token
@@ -1312,14 +1180,13 @@ function AdminPanel() {
     const data = await res.json();
     if (!res.ok) return alert(data.error || "Erro ao criar campanha.");
 
-    alert("Campanha criada.");
+    alert("Sorteio criado.");
     setForm({
       siteName: "Casa Premiada Ribeirão",
       title: "",
       slug: "",
       description: "",
       shortDescription: "",
-      organizer: "Casa Premiada Ribeirão",
       organizerPhone: "",
       whatsapp: "",
       logoImage: "",
@@ -1328,11 +1195,6 @@ function AdminPanel() {
       rangeEnd: 300,
       drawDate: "",
       coverImage: "",
-      theme: {
-        primary: "#b10019",
-        secondary: "#ffffff",
-        accent: "#d4af37",
-      },
     });
     load();
   };
@@ -1406,9 +1268,7 @@ function AdminPanel() {
           outline: none;
           background: #fff;
         }
-        .primaryBtn,
-        .outlineBtn,
-        .miniLink {
+        .primaryBtn, .outlineBtn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -1419,10 +1279,9 @@ function AdminPanel() {
           font-weight: 900;
           text-decoration: none;
           cursor: pointer;
-          transition: transform 0.15s ease;
+          border: none;
         }
         .primaryBtn {
-          border: none;
           color: #fff;
           background: linear-gradient(180deg, #b10019 0%, #850013 100%);
           box-shadow: 0 10px 22px rgba(177,0,25,0.22);
@@ -1474,10 +1333,17 @@ function AdminPanel() {
           text-transform: uppercase;
         }
         .miniLink {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 44px;
           padding: 0 16px;
           background: #fff8e7;
           color: #8a5c00;
           border: 1px solid #f2e2b8;
+          border-radius: 14px;
+          text-decoration: none;
+          font-weight: 900;
         }
         @media (max-width: 640px) {
           .adminGrid { grid-template-columns: 1fr; }
@@ -1489,7 +1355,7 @@ function AdminPanel() {
           <div className="topAdmin">
             <div>
               <h1 style={{ margin: 0, color: "#111" }}>Painel Admin</h1>
-              <p className="muted">Criar e gerenciar campanhas</p>
+              <p className="muted">Criar e gerenciar sorteios</p>
             </div>
 
             <button
@@ -1506,7 +1372,7 @@ function AdminPanel() {
 
           <div className="adminGrid">
             <div>
-              <label>Nome do site</label>
+              <label>Nome da empresa</label>
               <input
                 value={form.siteName}
                 onChange={(e) => setForm({ ...form, siteName: e.target.value })}
@@ -1535,9 +1401,7 @@ function AdminPanel() {
               <input
                 type="number"
                 value={form.pricePerNumber}
-                onChange={(e) =>
-                  setForm({ ...form, pricePerNumber: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, pricePerNumber: e.target.value })}
               />
             </div>
 
@@ -1560,7 +1424,7 @@ function AdminPanel() {
             </div>
 
             <div>
-              <label>Data do sorteio</label>
+              <label>Data</label>
               <input
                 value={form.drawDate}
                 onChange={(e) => setForm({ ...form, drawDate: e.target.value })}
@@ -1569,7 +1433,7 @@ function AdminPanel() {
             </div>
 
             <div>
-              <label>URL da foto do prêmio</label>
+              <label>URL da foto</label>
               <input
                 value={form.coverImage}
                 onChange={(e) => setForm({ ...form, coverImage: e.target.value })}
@@ -1585,20 +1449,10 @@ function AdminPanel() {
             </div>
 
             <div>
-              <label>Organizador</label>
-              <input
-                value={form.organizer}
-                onChange={(e) => setForm({ ...form, organizer: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <label>Telefone do organizador</label>
+              <label>Telefone</label>
               <input
                 value={form.organizerPhone}
-                onChange={(e) =>
-                  setForm({ ...form, organizerPhone: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, organizerPhone: e.target.value })}
               />
             </div>
 
@@ -1615,10 +1469,7 @@ function AdminPanel() {
               <label>Descrição curta</label>
               <input
                 value={form.shortDescription}
-                onChange={(e) =>
-                  setForm({ ...form, shortDescription: e.target.value })
-                }
-                placeholder="Ex: Garanta agora seus números da sorte."
+                onChange={(e) => setForm({ ...form, shortDescription: e.target.value })}
               />
             </div>
 
@@ -1627,9 +1478,7 @@ function AdminPanel() {
               <textarea
                 rows="4"
                 value={form.description}
-                onChange={(e) =>
-                  setForm({ ...form, description: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
               />
             </div>
           </div>
@@ -1640,12 +1489,12 @@ function AdminPanel() {
             type="button"
             style={{ marginTop: 16 }}
           >
-            Criar campanha
+            Criar sorteio
           </button>
         </section>
 
         <section className="card">
-          <h2 style={{ marginTop: 0 }}>Campanhas</h2>
+          <h2 style={{ marginTop: 0 }}>Sorteios</h2>
           <div className="list">
             {campaigns.map((item) => (
               <div className="listItem" key={item.id}>
@@ -1673,11 +1522,9 @@ function AdminPanel() {
                   <div>
                     <strong>{item.customer?.name || "Sem nome"}</strong>
                     <div className="muted">
-                      {item.customer?.phone || "-"} • {item.campaignSlug} •{" "}
-                      {item.selectedNumbers?.join(", ")}
+                      {item.customer?.phone || "-"} • {item.campaignSlug} • {item.selectedNumbers?.join(", ")}
                     </div>
                   </div>
-
                   <span className="badge">{item.status}</span>
                 </div>
               ))
@@ -1694,6 +1541,7 @@ function AdminPanel() {
 export default function App() {
   const [hash, setHash] = useState(route());
   const [campaigns, setCampaigns] = useState([]);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const onHash = () => setHash(route());
@@ -1702,16 +1550,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API}/campaigns`)
-      .then((r) => r.json())
-      .then((data) => setCampaigns(data))
-      .catch(() => setCampaigns([]));
+    async function loadCampaigns() {
+      try {
+        const res = await fetch(`${API}/campaigns`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setCampaigns(Array.isArray(data) ? data : []);
+      } catch {
+        setCampaigns([]);
+      } finally {
+        setLoaded(true);
+      }
+    }
+
+    loadCampaigns();
   }, []);
 
   if (hash === "#/admin") return <AdminPanel />;
 
   const slug = hash.replace("#/", "") || "air-fryer";
   const campaign = campaigns.find((c) => c.slug === slug) || campaigns[0];
+
+  if (!loaded) return null;
 
   if (!campaign) {
     return (
@@ -1725,7 +1585,10 @@ export default function App() {
               padding: 18,
             }}
           >
-            <h2 style={{ marginTop: 0 }}>Carregando campanha...</h2>
+            <h2 style={{ marginTop: 0 }}>Nenhum sorteio encontrado</h2>
+            <p style={{ marginBottom: 0 }}>
+              Crie um sorteio no painel admin para exibir no site.
+            </p>
           </section>
         </div>
       </div>
