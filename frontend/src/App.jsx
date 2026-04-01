@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const API = "http://localhost:3001/api";
+const API = "const API = "https://casapremiada.onrender.com/api";";
 
 function formatMoney(value) {
   return new Intl.NumberFormat("pt-BR", {
