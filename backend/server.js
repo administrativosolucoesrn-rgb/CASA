@@ -1,12 +1,16 @@
-const express = require("express");
-const cors = require("cors");
-const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const { v4: uuidv4 } = require("uuid");
+import express from "express";
+import cors from "cors";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /*
   =========================================
@@ -167,7 +171,7 @@ const upload = multer({
 
 /*
   =========================================
-  ROTAS DE TESTE
+  ROTAS
   =========================================
 */
 app.get("/", (req, res) => {
@@ -177,11 +181,6 @@ app.get("/", (req, res) => {
   });
 });
 
-/*
-  =========================================
-  UPLOAD
-  =========================================
-*/
 app.post("/api/upload", upload.single("file"), (req, res) => {
   try {
     if (!req.file) {
@@ -202,11 +201,6 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   }
 });
 
-/*
-  =========================================
-  ADMIN - SORTEIOS
-  =========================================
-*/
 app.get("/api/admin/raffles", (req, res) => {
   try {
     const raffles = readJSON(rafflesFile);
@@ -400,11 +394,6 @@ app.delete("/api/admin/raffles/:id", (req, res) => {
   }
 });
 
-/*
-  =========================================
-  ADMIN - PARTICIPANTES
-  =========================================
-*/
 app.get("/api/admin/raffles/:id/participants", (req, res) => {
   try {
     const participants = getParticipantsByRaffleId(req.params.id).sort(
@@ -586,11 +575,6 @@ app.delete("/api/admin/raffles/:raffleId/participants/:participantId", (req, res
   }
 });
 
-/*
-  =========================================
-  ROTA PÚBLICA DO SORTEIO
-  =========================================
-*/
 app.get("/api/raffles/:slug", (req, res) => {
   try {
     const raffles = readJSON(rafflesFile);
@@ -620,11 +604,6 @@ app.get("/api/raffles/:slug", (req, res) => {
   }
 });
 
-/*
-  =========================================
-  RESERVA / COMPRA PÚBLICA
-  =========================================
-*/
 app.post("/api/raffles/:slug/reserve", (req, res) => {
   try {
     const raffles = readJSON(rafflesFile);
@@ -692,11 +671,6 @@ app.post("/api/raffles/:slug/reserve", (req, res) => {
   }
 });
 
-/*
-  =========================================
-  MARCAR PAGAMENTO
-  =========================================
-*/
 app.post("/api/admin/raffles/:raffleId/participants/:participantId/pay", (req, res) => {
   try {
     const participants = readJSON(participantsFile);
@@ -731,11 +705,6 @@ app.post("/api/admin/raffles/:raffleId/participants/:participantId/pay", (req, r
   }
 });
 
-/*
-  =========================================
-  MÉTRICAS GERAIS
-  =========================================
-*/
 app.get("/api/admin/dashboard", (req, res) => {
   try {
     const raffles = readJSON(rafflesFile);
@@ -775,11 +744,6 @@ app.get("/api/admin/dashboard", (req, res) => {
   }
 });
 
-/*
-  =========================================
-  EXPORTAÇÃO CSV SIMPLES
-  =========================================
-*/
 app.get("/api/admin/raffles/:id/participants/csv", (req, res) => {
   try {
     const raffles = readJSON(rafflesFile);
@@ -815,11 +779,6 @@ app.get("/api/admin/raffles/:id/participants/csv", (req, res) => {
   }
 });
 
-/*
-  =========================================
-  INICIAR
-  =========================================
-*/
 app.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
 });
