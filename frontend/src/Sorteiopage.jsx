@@ -38,13 +38,22 @@ export default function SorteioPage() {
     loadRaffle();
   }, [slug]);
 
+  async function safeJson(res) {
+    const text = await res.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
+    }
+  }
+
   async function loadRaffle() {
     try {
       setLoading(true);
       setError("");
 
       const res = await fetch(`${API_BASE}/api/raffles/${slug}`);
-      const data = await res.json();
+      const data = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(data?.error || "Erro ao carregar sorteio.");
@@ -91,16 +100,16 @@ export default function SorteioPage() {
       const res = await fetch(`${API_BASE}/api/raffles/${slug}/reserve`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           name: name.trim(),
           phone: onlyDigits(phone),
-          numbers: selectedNumbers
-        })
+          numbers: selectedNumbers,
+        }),
       });
 
-      const data = await res.json();
+      const data = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(data?.error || "Erro ao reservar números.");
@@ -157,6 +166,21 @@ export default function SorteioPage() {
         <div style={styles.card}>
           <h2 style={styles.sectionTitle}>Escolha seus números</h2>
 
+          <div style={styles.legend}>
+            <div style={styles.legendItem}>
+              <span style={{ ...styles.legendColor, background: "#16a34a" }} />
+              Selecionado
+            </div>
+            <div style={styles.legendItem}>
+              <span style={{ ...styles.legendColor, background: "#fef3c7" }} />
+              Reservado
+            </div>
+            <div style={styles.legendItem}>
+              <span style={{ ...styles.legendColor, background: "#dbeafe" }} />
+              Pago
+            </div>
+          </div>
+
           <div style={styles.grid}>
             {Array.from({ length: Number(raffle?.totalNumbers || 0) }, (_, i) => i + 1).map(
               (number) => {
@@ -209,12 +233,16 @@ export default function SorteioPage() {
             />
 
             <div style={styles.summary}>
-              <div>Números: {selectedNumbers.length ? selectedNumbers.join(", ") : "-"}</div>
               <div>
-                Total:{" "}
-                <strong>
-                  {currencyBRL(selectedNumbers.length * Number(raffle?.pricePerNumber || 0))}
-                </strong>
+                <strong>Números escolhidos:</strong>{" "}
+                {selectedNumbers.length ? selectedNumbers.join(", ") : "-"}
+              </div>
+              <div>
+                <strong>Quantidade:</strong> {selectedNumbers.length}
+              </div>
+              <div>
+                <strong>Total:</strong>{" "}
+                {currencyBRL(selectedNumbers.length * Number(raffle?.pricePerNumber || 0))}
               </div>
             </div>
 
@@ -258,6 +286,7 @@ const styles = {
     padding: "18px",
     borderRadius: "20px",
     marginBottom: "18px",
+    boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
   },
   logo: {
     width: "90px",
@@ -269,6 +298,7 @@ const styles = {
     margin: 0,
     fontSize: "30px",
     fontWeight: 800,
+    color: "#111827",
   },
   description: {
     color: "#4b5563",
@@ -278,6 +308,7 @@ const styles = {
     fontWeight: 700,
     fontSize: "18px",
     color: "#16a34a",
+    marginTop: "10px",
   },
   prizeImage: {
     width: "100%",
@@ -285,16 +316,38 @@ const styles = {
     objectFit: "cover",
     borderRadius: "20px",
     marginBottom: "18px",
+    boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
   },
   card: {
     background: "#fff",
     borderRadius: "20px",
     padding: "18px",
     marginBottom: "18px",
+    boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
   },
   sectionTitle: {
     marginTop: 0,
     marginBottom: "16px",
+    color: "#111827",
+  },
+  legend: {
+    display: "flex",
+    gap: "14px",
+    flexWrap: "wrap",
+    marginBottom: "16px",
+    fontSize: "14px",
+  },
+  legendItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    color: "#4b5563",
+  },
+  legendColor: {
+    width: "16px",
+    height: "16px",
+    borderRadius: "4px",
+    display: "inline-block",
   },
   grid: {
     display: "grid",
@@ -308,6 +361,7 @@ const styles = {
     padding: "14px 8px",
     cursor: "pointer",
     fontWeight: 700,
+    color: "#111827",
   },
   numberSelected: {
     background: "#16a34a",
@@ -344,6 +398,7 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     gap: "8px",
+    color: "#111827",
   },
   reserveButton: {
     background: "#16a34a",
@@ -370,4 +425,4 @@ const styles = {
     borderRadius: "14px",
     marginBottom: "16px",
   },
-};
+};              
