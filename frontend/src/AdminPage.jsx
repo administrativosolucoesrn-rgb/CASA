@@ -540,9 +540,7 @@ export default function AdminPage() {
   async function handleCopyLink() {
     if (!selectedRaffle) return;
 
-    const link =
-      selectedRaffle.publicLink ||
-      `${window.location.origin}/#/sorteio/${selectedRaffle.slug || selectedRaffle.id}`
+    const link = `${window.location.origin}/#/sorteio/${selectedRaffle.slug || selectedRaffle.id}`;
     try {
       await navigator.clipboard.writeText(link);
       setMessage("Link copiado com sucesso.");
