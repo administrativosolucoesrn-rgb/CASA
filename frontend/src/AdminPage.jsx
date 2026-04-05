@@ -2,26 +2,25 @@ import React, { useEffect, useMemo, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
-const emptyRaffleForm = {
+const emptySorteioForm = {
   id: null,
-  title: "",
-  description: "",
-  drawDate: "",
-  pricePerNumber: "",
-  totalNumbers: "",
+  titulo: "",
+  descricao: "",
+  dataSorteio: "",
+  valorNumero: "",
+  totalNumeros: "",
   whatsapp: "",
-  status: "draft",
+  status: "ativo",
   logoUrl: "",
-  prizeImageUrl: "",
-  coverImageUrl: "",
+  fotoPremio: "",
 };
 
 const emptyParticipantForm = {
-  name: "",
-  phone: "",
-  numbers: "",
-  status: "reserved",
-  amountPaid: "",
+  nome: "",
+  telefone: "",
+  numeros: "",
+  status: "reservado",
+  valorPago: "",
 };
 
 function onlyDigits(value = "") {
@@ -45,10 +44,8 @@ function currencyBRL(value) {
 
 function formatDate(dateString) {
   if (!dateString) return "-";
-
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return "-";
-
   return date.toLocaleString("pt-BR");
 }
 
@@ -83,42 +80,44 @@ function downloadCSV(filename, rows) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 export default function AdminPage() {
-  const [raffles, setRaffles] = useState([]);
-  const [selectedRaffleId, setSelectedRaffleId] = useState(null);
+  const [sorteios, setSorteios] = useState([]);
+  const [selectedSorteioId, setSelectedSorteioId] = useState(null);
 
-  const [raffleForm, setRaffleForm] = useState(emptyRaffleForm);
+  const [sorteioForm, setSorteioForm] = useState(emptySorteioForm);
   const [participantForm, setParticipantForm] = useState(emptyParticipantForm);
 
   const [participants, setParticipants] = useState([]);
-  const [dashboard, setDashboard] = useState(null);
+  const [resumo, setResumo] = useState(null);
 
-  const [loadingRaffles, setLoadingRaffles] = useState(false);
+  const [loadingSorteios, setLoadingSorteios] = useState(false);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
-  const [savingRaffle, setSavingRaffle] = useState(false);
+  const [loadingResumo, setLoadingResumo] = useState(false);
+  const [savingSorteio, setSavingSorteio] = useState(false);
   const [savingParticipant, setSavingParticipant] = useState(false);
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingPrize, setUploadingPrize] = useState(false);
-  const [uploadingCover, setUploadingCover] = useState(false);
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
-    loadRaffles();
-    loadDashboard();
+    loadSorteios();
   }, []);
 
   useEffect(() => {
-    if (selectedRaffleId) {
-      loadParticipants(selectedRaffleId);
+    if (selectedSorteioId) {
+      loadParticipants(selectedSorteioId);
+      loadResumo(selectedSorteioId);
     } else {
       setParticipants([]);
+      setResumo(null);
     }
-  }, [selectedRaffleId]);
+  }, [selectedSorteioId]);
 
   async function safeJson(res) {
     const text = await res.text();
@@ -129,12 +128,12 @@ export default function AdminPage() {
     }
   }
 
-  async function loadRaffles() {
+  async function loadSorteios() {
     try {
-      setLoadingRaffles(true);
+      setLoadingSorteios(true);
       setError("");
 
-      const res = await fetch(`${API_BASE}/api/admin/raffles`);
+      const res = await fetch(`${API_BASE}/api/admin/sorteios`);
       const data = await safeJson(res);
 
       if (!res.ok) {
@@ -142,35 +141,46 @@ export default function AdminPage() {
       }
 
       const list = Array.isArray(data) ? data : [];
-      setRaffles(list);
+      setSorteios(list);
 
-      if (list.length && !selectedRaffleId) {
-        setSelectedRaffleId(list[0].id);
+      if (list.length && !selectedSorteioId) {
+        setSelectedSorteioId(list[0].id);
       }
 
       if (!list.length) {
-        setSelectedRaffleId(null);
+        setSelectedSorteioId(null);
       }
     } catch (err) {
       setError(err.message || "Erro ao carregar sorteios.");
     } finally {
-      setLoadingRaffles(false);
+      setLoadingSorteios(false);
     }
   }
 
-  async function loadParticipants(raffleId) {
+  async function loadParticipants(sorteioId) {
     try {
       setLoadingParticipants(true);
       setError("");
 
-      const res = await fetch(`${API_BASE}/api/admin/raffles/${raffleId}/participants`);
+      const res = await fetch(`${API_BASE}/api/admin/sorteios/${sorteioId}/participantes`);
       const data = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(data?.error || "Erro ao carregar participantes.");
       }
 
-      setParticipants(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      const normalized = list.map((item, index) => ({
+        id: item.id || `${item.nome || "p"}-${item.telefone || "t"}-${index}`,
+        nome: item.nome || "",
+        telefone: item.telefone || "",
+        numeros: Array.isArray(item.numeros) ? item.numeros : [],
+        status: Array.isArray(item.status) ? item.status.join(", ") : item.status || "",
+        valorPago: item.valorPago || 0,
+        createdAt: item.createdAt || null,
+      }));
+
+      setParticipants(normalized);
     } catch (err) {
       setError(err.message || "Erro ao carregar participantes.");
       setParticipants([]);
@@ -179,52 +189,58 @@ export default function AdminPage() {
     }
   }
 
-  async function loadDashboard() {
+  async function loadResumo(sorteioId) {
     try {
-      const res = await fetch(`${API_BASE}/api/admin/dashboard`);
+      setLoadingResumo(true);
+
+      const res = await fetch(`${API_BASE}/api/admin/sorteios/${sorteioId}/resumo`);
       const data = await safeJson(res);
 
-      if (!res.ok) return;
-      setDashboard(data);
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao carregar resumo.");
+      }
+
+      setResumo(data);
     } catch {
-      // silencioso
+      setResumo(null);
+    } finally {
+      setLoadingResumo(false);
     }
   }
 
-  function resetRaffleForm() {
-    setRaffleForm(emptyRaffleForm);
+  function resetSorteioForm() {
+    setSorteioForm(emptySorteioForm);
   }
 
   function resetParticipantForm() {
     setParticipantForm(emptyParticipantForm);
   }
 
-  const selectedRaffle = useMemo(() => {
-    return raffles.find((item) => item.id === selectedRaffleId) || null;
-  }, [raffles, selectedRaffleId]);
+  const selectedSorteio = useMemo(() => {
+    return sorteios.find((item) => item.id === selectedSorteioId) || null;
+  }, [sorteios, selectedSorteioId]);
 
-  const raffleMetrics = useMemo(() => {
-    if (!selectedRaffle) {
+  const sorteioMetrics = useMemo(() => {
+    if (!resumo) {
       return {
-        soldNumbers: 0,
-        reservedNumbers: 0,
-        paidNumbers: 0,
-        amountRaised: 0,
+        arrecadado: 0,
+        vendidos: 0,
+        reservados: 0,
+        disponiveis: 0,
       };
     }
 
     return {
-      soldNumbers: Number(selectedRaffle.soldNumbers || 0),
-      reservedNumbers: Number(selectedRaffle.reservedNumbers || 0),
-      paidNumbers: Number(selectedRaffle.paidNumbers || 0),
-      amountRaised: Number(selectedRaffle.amountRaised || 0),
+      arrecadado: Number(resumo.arrecadado || 0),
+      vendidos: Number(resumo.vendidos || 0),
+      reservados: Number(resumo.reservados || 0),
+      disponiveis: Number(resumo.disponiveis || 0),
     };
-  }, [selectedRaffle]);
+  }, [resumo]);
 
-  async function uploadFile(file, field) {
+  async function uploadFile(file) {
     const formData = new FormData();
-    formData.append("file", file);
-    formData.append("type", field);
+    formData.append("imagem", file);
 
     const res = await fetch(`${API_BASE}/api/upload`, {
       method: "POST",
@@ -234,7 +250,7 @@ export default function AdminPage() {
     const data = await safeJson(res);
 
     if (!res.ok) {
-      throw new Error(data?.error || "Erro ao enviar arquivo.");
+      throw new Error(data?.error || "Erro ao enviar imagem.");
     }
 
     return data.url;
@@ -249,12 +265,11 @@ export default function AdminPage() {
 
     try {
       if (field === "logoUrl") setUploadingLogo(true);
-      if (field === "prizeImageUrl") setUploadingPrize(true);
-      if (field === "coverImageUrl") setUploadingCover(true);
+      if (field === "fotoPremio") setUploadingPrize(true);
 
-      const url = await uploadFile(file, field);
+      const url = await uploadFile(file);
 
-      setRaffleForm((prev) => ({
+      setSorteioForm((prev) => ({
         ...prev,
         [field]: url,
       }));
@@ -264,33 +279,31 @@ export default function AdminPage() {
       setError(err.message || "Erro ao enviar imagem.");
     } finally {
       if (field === "logoUrl") setUploadingLogo(false);
-      if (field === "prizeImageUrl") setUploadingPrize(false);
-      if (field === "coverImageUrl") setUploadingCover(false);
-
+      if (field === "fotoPremio") setUploadingPrize(false);
       event.target.value = "";
     }
   }
 
-  function handleRaffleChange(field, value) {
+  function handleSorteioChange(field, value) {
     if (field === "whatsapp") {
-      setRaffleForm((prev) => ({
+      setSorteioForm((prev) => ({
         ...prev,
         whatsapp: formatPhone(value),
       }));
       return;
     }
 
-    setRaffleForm((prev) => ({
+    setSorteioForm((prev) => ({
       ...prev,
       [field]: value,
     }));
   }
 
   function handleParticipantChange(field, value) {
-    if (field === "phone") {
+    if (field === "telefone") {
       setParticipantForm((prev) => ({
         ...prev,
-        phone: formatPhone(value),
+        telefone: formatPhone(value),
       }));
       return;
     }
@@ -301,34 +314,32 @@ export default function AdminPage() {
     }));
   }
 
-  async function handleSaveRaffle(e) {
+  async function handleSaveSorteio(e) {
     e.preventDefault();
 
     try {
-      setSavingRaffle(true);
+      setSavingSorteio(true);
       setMessage("");
       setError("");
 
       const payload = {
-        title: raffleForm.title,
-        description: raffleForm.description,
-        drawDate: raffleForm.drawDate,
-        pricePerNumber: Number(raffleForm.pricePerNumber || 0),
-        totalNumbers: Number(raffleForm.totalNumbers || 0),
-        whatsapp: onlyDigits(raffleForm.whatsapp),
-        status: raffleForm.status,
-        logoUrl: raffleForm.logoUrl,
-        prizeImageUrl: raffleForm.prizeImageUrl,
-        coverImageUrl: raffleForm.coverImageUrl,
-        baseUrl: window.location.origin,
+        titulo: sorteioForm.titulo.trim(),
+        descricao: sorteioForm.descricao.trim(),
+        dataSorteio: sorteioForm.dataSorteio,
+        valorNumero: Number(sorteioForm.valorNumero || 0),
+        totalNumeros: Number(sorteioForm.totalNumeros || 0),
+        whatsapp: onlyDigits(sorteioForm.whatsapp),
+        status: sorteioForm.status,
+        logoUrl: sorteioForm.logoUrl,
+        fotoPremio: sorteioForm.fotoPremio,
       };
 
-      const isEdit = Boolean(raffleForm.id);
+      const isEdit = Boolean(sorteioForm.id);
 
       const res = await fetch(
         isEdit
-          ? `${API_BASE}/api/admin/raffles/${raffleForm.id}`
-          : `${API_BASE}/api/admin/raffles`,
+          ? `${API_BASE}/api/admin/sorteios/${sorteioForm.id}`
+          : `${API_BASE}/api/admin/sorteios`,
         {
           method: isEdit ? "PUT" : "POST",
           headers: {
@@ -345,39 +356,39 @@ export default function AdminPage() {
       }
 
       setMessage(isEdit ? "Sorteio atualizado com sucesso." : "Sorteio criado com sucesso.");
-      resetRaffleForm();
-      await loadRaffles();
-      await loadDashboard();
+      resetSorteioForm();
+      await loadSorteios();
 
       if (data?.id) {
-        setSelectedRaffleId(data.id);
+        setSelectedSorteioId(data.id);
+        await loadResumo(data.id);
+        await loadParticipants(data.id);
       }
     } catch (err) {
       setError(err.message || "Erro ao salvar sorteio.");
     } finally {
-      setSavingRaffle(false);
+      setSavingSorteio(false);
     }
   }
 
-  function handleEditRaffle(raffle) {
-    setRaffleForm({
-      id: raffle.id || null,
-      title: raffle.title || "",
-      description: raffle.description || "",
-      drawDate: raffle.drawDate ? String(raffle.drawDate).slice(0, 16) : "",
-      pricePerNumber: raffle.pricePerNumber || "",
-      totalNumbers: raffle.totalNumbers || "",
-      whatsapp: formatPhone(raffle.whatsapp || ""),
-      status: raffle.status || "draft",
-      logoUrl: raffle.logoUrl || "",
-      prizeImageUrl: raffle.prizeImageUrl || "",
-      coverImageUrl: raffle.coverImageUrl || "",
+  function handleEditSorteio(sorteio) {
+    setSorteioForm({
+      id: sorteio.id || null,
+      titulo: sorteio.titulo || "",
+      descricao: sorteio.descricao || "",
+      dataSorteio: sorteio.dataSorteio ? String(sorteio.dataSorteio).slice(0, 16) : "",
+      valorNumero: sorteio.valorNumero || "",
+      totalNumeros: sorteio.totalNumeros || "",
+      whatsapp: formatPhone(sorteio.whatsapp || ""),
+      status: sorteio.status || "ativo",
+      logoUrl: sorteio.logoUrl || "",
+      fotoPremio: sorteio.fotoPremio || "",
     });
 
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function handleDeleteRaffle(id) {
+  async function handleDeleteSorteio(id) {
     const confirmed = window.confirm("Deseja realmente excluir este sorteio?");
     if (!confirmed) return;
 
@@ -385,7 +396,7 @@ export default function AdminPage() {
       setError("");
       setMessage("");
 
-      const res = await fetch(`${API_BASE}/api/admin/raffles/${id}`, {
+      const res = await fetch(`${API_BASE}/api/admin/sorteios/${id}`, {
         method: "DELETE",
       });
 
@@ -397,14 +408,14 @@ export default function AdminPage() {
 
       setMessage("Sorteio excluído com sucesso.");
 
-      if (selectedRaffleId === id) {
-        setSelectedRaffleId(null);
+      if (selectedSorteioId === id) {
+        setSelectedSorteioId(null);
       }
 
-      await loadRaffles();
-      await loadDashboard();
-      resetRaffleForm();
+      await loadSorteios();
+      resetSorteioForm();
       setParticipants([]);
+      setResumo(null);
     } catch (err) {
       setError(err.message || "Erro ao excluir sorteio.");
     }
@@ -413,7 +424,7 @@ export default function AdminPage() {
   async function handleSaveParticipant(e) {
     e.preventDefault();
 
-    if (!selectedRaffle) {
+    if (!selectedSorteio) {
       setError("Selecione um sorteio antes de cadastrar participante.");
       return;
     }
@@ -423,27 +434,43 @@ export default function AdminPage() {
       setError("");
       setMessage("");
 
-      const parsedNumbers = parseNumbersInput(participantForm.numbers);
+      const parsedNumbers = parseNumbersInput(participantForm.numeros);
+
+      if (!participantForm.nome.trim()) {
+        throw new Error("Nome é obrigatório.");
+      }
+
+      if (!participantForm.telefone.trim()) {
+        throw new Error("Telefone é obrigatório.");
+      }
+
+      if (!parsedNumbers.length) {
+        throw new Error("Informe pelo menos um número.");
+      }
 
       const payload = {
-        name: participantForm.name.trim(),
-        phone: onlyDigits(participantForm.phone),
-        numbers: parsedNumbers,
+        nome: participantForm.nome.trim(),
+        telefone: onlyDigits(participantForm.telefone),
+        numeros: parsedNumbers,
         status: participantForm.status,
-        amountPaid:
-          participantForm.amountPaid !== ""
-            ? Number(participantForm.amountPaid)
-            : parsedNumbers.length * Number(selectedRaffle.pricePerNumber || 0),
+        valorPago:
+          participantForm.valorPago !== ""
+            ? Number(participantForm.valorPago)
+            : parsedNumbers.length * Number(selectedSorteio.valorNumero || 0),
       };
 
       const res = await fetch(
-        `${API_BASE}/api/admin/raffles/${selectedRaffle.id}/participants`,
+        `${API_BASE}/api/public/sorteios/${selectedSorteio.id}/reservar`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            nome: payload.nome,
+            telefone: payload.telefone,
+            numeros: payload.numeros,
+          }),
         }
       );
 
@@ -455,9 +482,9 @@ export default function AdminPage() {
 
       setMessage("Participante cadastrado com sucesso.");
       resetParticipantForm();
-      await loadParticipants(selectedRaffle.id);
-      await loadRaffles();
-      await loadDashboard();
+      await loadParticipants(selectedSorteio.id);
+      await loadSorteios();
+      await loadResumo(selectedSorteio.id);
     } catch (err) {
       setError(err.message || "Erro ao cadastrar participante.");
     } finally {
@@ -465,82 +492,11 @@ export default function AdminPage() {
     }
   }
 
-  async function handleMarkAsPaid(participant) {
-    if (!selectedRaffle) return;
-
-    try {
-      setError("");
-      setMessage("");
-
-      const res = await fetch(
-        `${API_BASE}/api/admin/raffles/${selectedRaffle.id}/participants/${participant.id}/pay`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            amountPaid:
-              participant.amountPaid != null && participant.amountPaid !== ""
-                ? Number(participant.amountPaid)
-                : Array.isArray(participant.numbers)
-                ? participant.numbers.length * Number(selectedRaffle.pricePerNumber || 0)
-                : 0,
-          }),
-        }
-      );
-
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao marcar pagamento.");
-      }
-
-      setMessage("Participante marcado como pago.");
-      await loadParticipants(selectedRaffle.id);
-      await loadRaffles();
-      await loadDashboard();
-    } catch (err) {
-      setError(err.message || "Erro ao marcar pagamento.");
-    }
-  }
-
-  async function handleDeleteParticipant(participantId) {
-    if (!selectedRaffle) return;
-
-    const confirmed = window.confirm("Deseja excluir este participante?");
-    if (!confirmed) return;
-
-    try {
-      setError("");
-      setMessage("");
-
-      const res = await fetch(
-        `${API_BASE}/api/admin/raffles/${selectedRaffle.id}/participants/${participantId}`,
-        {
-          method: "DELETE",
-        }
-      );
-
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao excluir participante.");
-      }
-
-      setMessage("Participante excluído com sucesso.");
-      await loadParticipants(selectedRaffle.id);
-      await loadRaffles();
-      await loadDashboard();
-    } catch (err) {
-      setError(err.message || "Erro ao excluir participante.");
-    }
-  }
-
   async function handleCopyLink() {
-    if (!selectedRaffle) return;
+    if (!selectedSorteio) return;
 
-    const link = `${window.location.origin}/#/sorteio/${selectedRaffle.slug || selectedRaffle.id}`;
+    const link = `${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`;
+
     try {
       await navigator.clipboard.writeText(link);
       setMessage("Link copiado com sucesso.");
@@ -550,17 +506,15 @@ export default function AdminPage() {
   }
 
   async function handleShare() {
-    if (!selectedRaffle) return;
+    if (!selectedSorteio) return;
 
-    const link =
-      selectedRaffle.publicLink ||
-      `${window.location.origin}/sorteio/${selectedRaffle.slug || selectedRaffle.id}`;
+    const link = `${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`;
 
     try {
       if (navigator.share) {
         await navigator.share({
-          title: selectedRaffle.title,
-          text: `Participe do sorteio ${selectedRaffle.title}`,
+          title: selectedSorteio.titulo,
+          text: `Participe do sorteio ${selectedSorteio.titulo}`,
           url: link,
         });
         setMessage("Link compartilhado com sucesso.");
@@ -574,21 +528,19 @@ export default function AdminPage() {
   }
 
   function handleExportParticipants() {
-    if (!selectedRaffle) return;
+    if (!selectedSorteio) return;
 
     const rows = [
-      ["Nome", "Telefone", "Números Comprados", "Status", "Valor Pago", "Criado em"],
+      ["Nome", "Telefone", "Números Comprados", "Status"],
       ...participants.map((p) => [
-        p.name || "",
-        p.phone || "",
-        Array.isArray(p.numbers) ? p.numbers.join(", ") : "",
+        p.nome || "",
+        p.telefone || "",
+        Array.isArray(p.numeros) ? p.numeros.join(", ") : "",
         p.status || "",
-        p.amountPaid || 0,
-        formatDate(p.createdAt),
       ]),
     ];
 
-    const safeName = (selectedRaffle.title || "participantes")
+    const safeName = (selectedSorteio.titulo || "participantes")
       .toLowerCase()
       .replace(/\s+/g, "-");
 
@@ -604,7 +556,7 @@ export default function AdminPage() {
             <p style={styles.subtitle}>Casa Premiada Ribeirão</p>
           </div>
 
-          <button style={styles.darkButton} onClick={resetRaffleForm}>
+          <button style={styles.darkButton} onClick={resetSorteioForm}>
             + Novo sorteio
           </button>
         </header>
@@ -612,40 +564,19 @@ export default function AdminPage() {
         {error ? <div style={styles.errorBox}>{error}</div> : null}
         {message ? <div style={styles.successBox}>{message}</div> : null}
 
-        {dashboard ? (
-          <section style={styles.dashboardGrid}>
-            <div style={styles.dashboardCard}>
-              <span style={styles.metricLabel}>Total arrecadado</span>
-              <strong style={styles.metricValue}>{currencyBRL(dashboard.totalRaised)}</strong>
-            </div>
-            <div style={styles.dashboardCard}>
-              <span style={styles.metricLabel}>Bilhetes vendidos</span>
-              <strong style={styles.metricValue}>{dashboard.totalSold || 0}</strong>
-            </div>
-            <div style={styles.dashboardCard}>
-              <span style={styles.metricLabel}>Reservados</span>
-              <strong style={styles.metricValue}>{dashboard.totalReserved || 0}</strong>
-            </div>
-            <div style={styles.dashboardCard}>
-              <span style={styles.metricLabel}>Pagos</span>
-              <strong style={styles.metricValue}>{dashboard.totalPaid || 0}</strong>
-            </div>
-          </section>
-        ) : null}
-
         <section style={styles.mainGrid}>
           <div style={styles.card}>
             <h2 style={styles.cardTitle}>
-              {raffleForm.id ? "Editar sorteio" : "Criar sorteio"}
+              {sorteioForm.id ? "Editar sorteio" : "Criar sorteio"}
             </h2>
 
-            <form onSubmit={handleSaveRaffle} style={styles.form}>
+            <form onSubmit={handleSaveSorteio} style={styles.form}>
               <div style={styles.field}>
                 <label style={styles.label}>Título</label>
                 <input
                   style={styles.input}
-                  value={raffleForm.title}
-                  onChange={(e) => handleRaffleChange("title", e.target.value)}
+                  value={sorteioForm.titulo}
+                  onChange={(e) => handleSorteioChange("titulo", e.target.value)}
                   placeholder="Ex: Casa Premiada Ribeirão"
                   required
                 />
@@ -655,8 +586,8 @@ export default function AdminPage() {
                 <label style={styles.label}>Descrição</label>
                 <textarea
                   style={styles.textarea}
-                  value={raffleForm.description}
-                  onChange={(e) => handleRaffleChange("description", e.target.value)}
+                  value={sorteioForm.descricao}
+                  onChange={(e) => handleSorteioChange("descricao", e.target.value)}
                   placeholder="Descreva o prêmio e regras"
                   rows={4}
                 />
@@ -668,8 +599,8 @@ export default function AdminPage() {
                   <input
                     type="datetime-local"
                     style={styles.input}
-                    value={raffleForm.drawDate}
-                    onChange={(e) => handleRaffleChange("drawDate", e.target.value)}
+                    value={sorteioForm.dataSorteio}
+                    onChange={(e) => handleSorteioChange("dataSorteio", e.target.value)}
                   />
                 </div>
 
@@ -677,8 +608,8 @@ export default function AdminPage() {
                   <label style={styles.label}>WhatsApp</label>
                   <input
                     style={styles.input}
-                    value={raffleForm.whatsapp}
-                    onChange={(e) => handleRaffleChange("whatsapp", e.target.value)}
+                    value={sorteioForm.whatsapp}
+                    onChange={(e) => handleSorteioChange("whatsapp", e.target.value)}
                     placeholder="(16) 99999-9999"
                   />
                 </div>
@@ -692,8 +623,8 @@ export default function AdminPage() {
                     min="0"
                     step="0.01"
                     style={styles.input}
-                    value={raffleForm.pricePerNumber}
-                    onChange={(e) => handleRaffleChange("pricePerNumber", e.target.value)}
+                    value={sorteioForm.valorNumero}
+                    onChange={(e) => handleSorteioChange("valorNumero", e.target.value)}
                     placeholder="2.00"
                     required
                   />
@@ -705,8 +636,8 @@ export default function AdminPage() {
                     type="number"
                     min="1"
                     style={styles.input}
-                    value={raffleForm.totalNumbers}
-                    onChange={(e) => handleRaffleChange("totalNumbers", e.target.value)}
+                    value={sorteioForm.totalNumeros}
+                    onChange={(e) => handleSorteioChange("totalNumeros", e.target.value)}
                     placeholder="300"
                     required
                   />
@@ -717,53 +648,51 @@ export default function AdminPage() {
                 <label style={styles.label}>Status</label>
                 <select
                   style={styles.input}
-                  value={raffleForm.status}
-                  onChange={(e) => handleRaffleChange("status", e.target.value)}
+                  value={sorteioForm.status}
+                  onChange={(e) => handleSorteioChange("status", e.target.value)}
                 >
-                  <option value="draft">Rascunho</option>
-                  <option value="published">Publicado</option>
-                  <option value="finished">Finalizado</option>
+                  <option value="ativo">Ativo</option>
+                  <option value="inativo">Inativo</option>
                 </select>
               </div>
 
               <div style={styles.uploadArea}>
                 <label style={styles.label}>Logo</label>
-                <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, "logoUrl")} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleImageUpload(e, "logoUrl")}
+                />
                 {uploadingLogo ? <small>Enviando logo...</small> : null}
-                {raffleForm.logoUrl ? (
-                  <img src={raffleForm.logoUrl} alt="Logo" style={styles.previewSmall} />
+                {sorteioForm.logoUrl ? (
+                  <img src={sorteioForm.logoUrl} alt="Logo" style={styles.previewSmall} />
                 ) : null}
               </div>
 
               <div style={styles.uploadArea}>
                 <label style={styles.label}>Foto do prêmio</label>
-                <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, "prizeImageUrl")} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleImageUpload(e, "fotoPremio")}
+                />
                 {uploadingPrize ? <small>Enviando foto do prêmio...</small> : null}
-                {raffleForm.prizeImageUrl ? (
-                  <img src={raffleForm.prizeImageUrl} alt="Prêmio" style={styles.previewLarge} />
-                ) : null}
-              </div>
-
-              <div style={styles.uploadArea}>
-                <label style={styles.label}>Imagem de capa</label>
-                <input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, "coverImageUrl")} />
-                {uploadingCover ? <small>Enviando capa...</small> : null}
-                {raffleForm.coverImageUrl ? (
-                  <img src={raffleForm.coverImageUrl} alt="Capa" style={styles.previewLarge} />
+                {sorteioForm.fotoPremio ? (
+                  <img src={sorteioForm.fotoPremio} alt="Prêmio" style={styles.previewLarge} />
                 ) : null}
               </div>
 
               <div style={styles.actions}>
-                <button type="submit" style={styles.greenButton} disabled={savingRaffle}>
-                  {savingRaffle
+                <button type="submit" style={styles.greenButton} disabled={savingSorteio}>
+                  {savingSorteio
                     ? "Salvando..."
-                    : raffleForm.id
+                    : sorteioForm.id
                     ? "Atualizar sorteio"
                     : "Criar sorteio"}
                 </button>
 
-                {raffleForm.id ? (
-                  <button type="button" style={styles.grayButton} onClick={resetRaffleForm}>
+                {sorteioForm.id ? (
+                  <button type="button" style={styles.grayButton} onClick={resetSorteioForm}>
                     Cancelar edição
                   </button>
                 ) : null}
@@ -774,18 +703,18 @@ export default function AdminPage() {
           <div style={styles.card}>
             <h2 style={styles.cardTitle}>Sorteios cadastrados</h2>
 
-            {loadingRaffles ? (
+            {loadingSorteios ? (
               <p>Carregando sorteios...</p>
-            ) : raffles.length === 0 ? (
+            ) : sorteios.length === 0 ? (
               <p>Nenhum sorteio cadastrado.</p>
             ) : (
               <div style={styles.list}>
-                {raffles.map((raffle) => {
-                  const active = selectedRaffleId === raffle.id;
+                {sorteios.map((sorteio) => {
+                  const active = selectedSorteioId === sorteio.id;
 
                   return (
                     <div
-                      key={raffle.id}
+                      key={sorteio.id}
                       style={{
                         ...styles.listItem,
                         border: active ? "2px solid #16a34a" : "1px solid #e5e7eb",
@@ -793,37 +722,39 @@ export default function AdminPage() {
                     >
                       <div
                         style={styles.listItemMain}
-                        onClick={() => setSelectedRaffleId(raffle.id)}
+                        onClick={() => setSelectedSorteioId(sorteio.id)}
                       >
                         <div style={styles.listItemTitleRow}>
-                          <strong>{raffle.title}</strong>
-                          <span style={styles.badge}>{raffle.status}</span>
+                          <strong>{sorteio.titulo}</strong>
+                          <span style={styles.badge}>{sorteio.status}</span>
                         </div>
 
                         <div style={styles.metaText}>
-                          Valor: {currencyBRL(raffle.pricePerNumber)}
+                          Valor: {currencyBRL(sorteio.valorNumero)}
                         </div>
                         <div style={styles.metaText}>
-                          Números: {raffle.totalNumbers || 0}
+                          Números: {sorteio.totalNumeros || 0}
                         </div>
                         <div style={styles.metaText}>
-                          Sorteio: {formatDate(raffle.drawDate)}
+                          Sorteio: {formatDate(sorteio.dataSorteio)}
                         </div>
                       </div>
 
                       <div style={styles.inlineButtons}>
                         <button
+                          type="button"
                           style={styles.smallButton}
-                          onClick={() => handleEditRaffle(raffle)}
+                          onClick={() => handleEditSorteio(sorteio)}
                         >
                           Editar
                         </button>
                         <button
+                          type="button"
                           style={styles.smallButton}
-                          onClick={() => {
-                            setSelectedRaffleId(raffle.id);
-                            navigator.clipboard.writeText(
-                              `${window.location.origin}/sorteio/${raffle.slug || raffle.id}`
+                          onClick={async () => {
+                            setSelectedSorteioId(sorteio.id);
+                            await navigator.clipboard.writeText(
+                              `${window.location.origin}/#/sorteio/${sorteio.slug || sorteio.id}`
                             );
                             setMessage("Link copiado.");
                           }}
@@ -831,8 +762,9 @@ export default function AdminPage() {
                           Link
                         </button>
                         <button
+                          type="button"
                           style={styles.smallDangerButton}
-                          onClick={() => handleDeleteRaffle(raffle.id)}
+                          onClick={() => handleDeleteSorteio(sorteio.id)}
                         >
                           Excluir
                         </button>
@@ -845,27 +777,35 @@ export default function AdminPage() {
           </div>
         </section>
 
-        {selectedRaffle ? (
+        {selectedSorteio ? (
           <>
             <section style={styles.metricsGrid}>
               <div style={styles.metricCard}>
                 <span style={styles.metricLabel}>Arrecadado</span>
-                <strong style={styles.metricValue}>{currencyBRL(raffleMetrics.amountRaised)}</strong>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : currencyBRL(sorteioMetrics.arrecadado)}
+                </strong>
               </div>
 
               <div style={styles.metricCard}>
                 <span style={styles.metricLabel}>Vendidos</span>
-                <strong style={styles.metricValue}>{raffleMetrics.soldNumbers}</strong>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : sorteioMetrics.vendidos}
+                </strong>
               </div>
 
               <div style={styles.metricCard}>
                 <span style={styles.metricLabel}>Reservados</span>
-                <strong style={styles.metricValue}>{raffleMetrics.reservedNumbers}</strong>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : sorteioMetrics.reservados}
+                </strong>
               </div>
 
               <div style={styles.metricCard}>
-                <span style={styles.metricLabel}>Pagos</span>
-                <strong style={styles.metricValue}>{raffleMetrics.paidNumbers}</strong>
+                <span style={styles.metricLabel}>Disponíveis</span>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : sorteioMetrics.disponiveis}
+                </strong>
               </div>
             </section>
 
@@ -889,7 +829,7 @@ export default function AdminPage() {
               <input
                 readOnly
                 style={styles.input}
-                value={`${window.location.origin}/sorteio/${selectedRaffle.slug || selectedRaffle.id}`}
+                value={`${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`}
               />
             </section>
 
@@ -902,8 +842,8 @@ export default function AdminPage() {
                     <label style={styles.label}>Nome</label>
                     <input
                       style={styles.input}
-                      value={participantForm.name}
-                      onChange={(e) => handleParticipantChange("name", e.target.value)}
+                      value={participantForm.nome}
+                      onChange={(e) => handleParticipantChange("nome", e.target.value)}
                       placeholder="Nome completo"
                       required
                     />
@@ -913,8 +853,8 @@ export default function AdminPage() {
                     <label style={styles.label}>Telefone</label>
                     <input
                       style={styles.input}
-                      value={participantForm.phone}
-                      onChange={(e) => handleParticipantChange("phone", e.target.value)}
+                      value={participantForm.telefone}
+                      onChange={(e) => handleParticipantChange("telefone", e.target.value)}
                       placeholder="(16) 99999-9999"
                       required
                     />
@@ -924,8 +864,8 @@ export default function AdminPage() {
                     <label style={styles.label}>Números comprados</label>
                     <input
                       style={styles.input}
-                      value={participantForm.numbers}
-                      onChange={(e) => handleParticipantChange("numbers", e.target.value)}
+                      value={participantForm.numeros}
+                      onChange={(e) => handleParticipantChange("numeros", e.target.value)}
                       placeholder="Ex: 1, 8, 15, 44"
                       required
                     />
@@ -942,9 +882,8 @@ export default function AdminPage() {
                         value={participantForm.status}
                         onChange={(e) => handleParticipantChange("status", e.target.value)}
                       >
-                        <option value="reserved">Reservado</option>
-                        <option value="paid">Pago</option>
-                        <option value="sold">Vendido</option>
+                        <option value="reservado">Reservado</option>
+                        <option value="pago">Pago</option>
                       </select>
                     </div>
 
@@ -955,8 +894,8 @@ export default function AdminPage() {
                         min="0"
                         step="0.01"
                         style={styles.input}
-                        value={participantForm.amountPaid}
-                        onChange={(e) => handleParticipantChange("amountPaid", e.target.value)}
+                        value={participantForm.valorPago}
+                        onChange={(e) => handleParticipantChange("valorPago", e.target.value)}
                         placeholder="Automático se vazio"
                       />
                     </div>
@@ -993,61 +932,19 @@ export default function AdminPage() {
                           <th style={styles.th}>Telefone</th>
                           <th style={styles.th}>Números</th>
                           <th style={styles.th}>Status</th>
-                          <th style={styles.th}>Valor</th>
-                          <th style={styles.th}>Ações</th>
                         </tr>
                       </thead>
                       <tbody>
                         {participants.map((participant) => (
                           <tr key={participant.id}>
-                            <td style={styles.td}>{participant.name || "-"}</td>
-                            <td style={styles.td}>{participant.phone || "-"}</td>
+                            <td style={styles.td}>{participant.nome || "-"}</td>
+                            <td style={styles.td}>{participant.telefone || "-"}</td>
                             <td style={styles.td}>
-                              {Array.isArray(participant.numbers)
-                                ? participant.numbers.join(", ")
+                              {Array.isArray(participant.numeros)
+                                ? participant.numeros.join(", ")
                                 : "-"}
                             </td>
-                            <td style={styles.td}>
-                              <span
-                                style={{
-                                  ...styles.statusPill,
-                                  background:
-                                    participant.status === "paid"
-                                      ? "#dcfce7"
-                                      : participant.status === "reserved"
-                                      ? "#fef3c7"
-                                      : "#e0f2fe",
-                                  color:
-                                    participant.status === "paid"
-                                      ? "#166534"
-                                      : participant.status === "reserved"
-                                      ? "#92400e"
-                                      : "#075985",
-                                }}
-                              >
-                                {participant.status}
-                              </span>
-                            </td>
-                            <td style={styles.td}>{currencyBRL(participant.amountPaid || 0)}</td>
-                            <td style={styles.td}>
-                              <div style={styles.inlineButtons}>
-                                {participant.status !== "paid" ? (
-                                  <button
-                                    style={styles.smallButton}
-                                    onClick={() => handleMarkAsPaid(participant)}
-                                  >
-                                    Marcar pago
-                                  </button>
-                                ) : null}
-
-                                <button
-                                  style={styles.smallDangerButton}
-                                  onClick={() => handleDeleteParticipant(participant.id)}
-                                >
-                                  Excluir
-                                </button>
-                              </div>
-                            </td>
+                            <td style={styles.td}>{participant.status || "-"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1113,18 +1010,6 @@ const styles = {
     padding: "12px 14px",
     borderRadius: "14px",
     marginBottom: "16px",
-  },
-  dashboardGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: "14px",
-    marginBottom: "20px",
-  },
-  dashboardCard: {
-    background: "#fff",
-    borderRadius: "18px",
-    padding: "18px",
-    boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
   },
   mainGrid: {
     display: "grid",
@@ -1355,14 +1240,6 @@ const styles = {
     borderBottom: "1px solid #e5e7eb",
     fontSize: "14px",
     verticalAlign: "top",
-  },
-  statusPill: {
-    display: "inline-block",
-    padding: "6px 10px",
-    borderRadius: "999px",
-    fontSize: "12px",
-    fontWeight: 700,
-    textTransform: "capitalize",
   },
   helpText: {
     color: "#6b7280",
