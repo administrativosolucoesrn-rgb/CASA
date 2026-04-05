@@ -1,59 +1,49 @@
-import express from "express";
-import cors from "cors";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
-import { v4 as uuidv4 } from "uuid";
+const express = require("express");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const multer = require("multer");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-/*
-  =========================================
-  PASTAS
-  =========================================
-*/
-const uploadsDir = path.join(__dirname, "uploads");
-const dataDir = path.join(__dirname, "data");
-const rafflesFile = path.join(dataDir, "raffles.json");
-const participantsFile = path.join(dataDir, "participants.json");
-
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-if (!fs.existsSync(rafflesFile)) fs.writeFileSync(rafflesFile, JSON.stringify([]));
-if (!fs.existsSync(participantsFile)) fs.writeFileSync(participantsFile, JSON.stringify([]));
-
-/*
-  =========================================
-  MIDDLEWARES
-  =========================================
-*/
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true }));
-app.use("/uploads", express.static(uploadsDir));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
-/*
-  =========================================
-  FUNÇÕES AUXILIARES
-  =========================================
-*/
-function readJSON(filePath) {
+const ROOT_DIR = __dirname;
+const DATA_DIR = path.join(ROOT_DIR, "data");
+const UPLOADS_DIR = path.join(ROOT_DIR, "uploads");
+const PUBLIC_DIR = path.join(ROOT_DIR, "public");
+const DIST_DIR = path.join(ROOT_DIR, "dist");
+const SORTEIOS_FILE = path.join(DATA_DIR, "sorteios.json");
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+app.use("/uploads", express.static(UPLOADS_DIR));
+
+function ensureDataFile() {
+  if (!fs.existsSync(SORTEIOS_FILE)) {
+    fs.writeFileSync(SORTEIOS_FILE, JSON.stringify([], null, 2), "utf-8");
+  }
+}
+ensureDataFile();
+
+function readSorteios() {
+  ensureDataFile();
   try {
-    const content = fs.readFileSync(filePath, "utf8");
-    return JSON.parse(content || "[]");
+    const raw = fs.readFileSync(SORTEIOS_FILE, "utf-8");
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
   } catch (error) {
-    console.error(`Erro ao ler ${filePath}:`, error);
+    console.error("Erro ao ler sorteios.json:", error);
     return [];
   }
 }
 
-function writeJSON(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+function saveSorteios(data) {
+  fs.writeFileSync(SORTEIOS_FILE, JSON.stringify(data, null, 2), "utf-8");
 }
 
 function slugify(text = "") {
@@ -67,718 +57,410 @@ function slugify(text = "") {
     .replace(/-+/g, "-");
 }
 
-function onlyDigits(value = "") {
-  return String(value).replace(/\D/g, "");
+function gerarId() {
+  return Date.now();
 }
 
-function normalizeNumberArray(numbers) {
-  if (!Array.isArray(numbers)) return [];
+function buildNumeros(total, existentes = []) {
+  const mapaExistente = new Map(
+    (existentes || []).map((n) => [Number(n.numero), n])
+  );
 
-  const clean = numbers
-    .map((n) => Number(n))
-    .filter((n) => Number.isInteger(n) && n > 0);
-
-  return [...new Set(clean)].sort((a, b) => a - b);
-}
-
-function getParticipantsByRaffleId(raffleId) {
-  const participants = readJSON(participantsFile);
-  return participants.filter((p) => p.raffleId === raffleId);
-}
-
-function calcRaffleMetrics(raffle) {
-  const participants = getParticipantsByRaffleId(raffle.id);
-
-  let soldNumbers = 0;
-  let reservedNumbers = 0;
-  let paidNumbers = 0;
-  let amountRaised = 0;
-
-  for (const participant of participants) {
-    const qty = Array.isArray(participant.numbers) ? participant.numbers.length : 0;
-    const amountPaid = Number(participant.amountPaid || 0);
-
-    if (participant.status === "reserved") {
-      reservedNumbers += qty;
-    }
-
-    if (participant.status === "paid") {
-      soldNumbers += qty;
-      paidNumbers += qty;
-      amountRaised += amountPaid;
-    }
-
-    if (participant.status === "sold") {
-      soldNumbers += qty;
-      amountRaised += amountPaid;
-    }
+  const numeros = [];
+  for (let i = 1; i <= Number(total || 0); i++) {
+    const existente = mapaExistente.get(i);
+    numeros.push({
+      numero: i,
+      status: existente?.status || "disponivel",
+      compradorNome: existente?.compradorNome || "",
+      compradorTelefone: existente?.compradorTelefone || "",
+      reservadoEm: existente?.reservadoEm || null,
+      pagoEm: existente?.pagoEm || null,
+    });
   }
+  return numeros;
+}
+
+function normalizarSorteio(body, sorteioAtual = null) {
+  const titulo = body.titulo?.trim() || "";
+  const totalNumeros = Number(body.totalNumeros || 0);
+  const valorNumero = Number(body.valorNumero || 0);
+
+  let slug = body.slug?.trim() || "";
+  if (!slug) slug = slugify(titulo || `sorteio-${Date.now()}`);
+
+  const numeros = buildNumeros(
+    totalNumeros,
+    sorteioAtual?.numeros || body.numeros || []
+  );
 
   return {
-    soldNumbers,
-    reservedNumbers,
-    paidNumbers,
-    amountRaised,
+    id: sorteioAtual?.id || gerarId(),
+    slug,
+    titulo,
+    descricao: body.descricao || "",
+    valorNumero,
+    totalNumeros,
+    fotoPremio: body.fotoPremio || sorteioAtual?.fotoPremio || "",
+    logoUrl: body.logoUrl || sorteioAtual?.logoUrl || "",
+    whatsapp: body.whatsapp || sorteioAtual?.whatsapp || "",
+    status: body.status || sorteioAtual?.status || "ativo",
+    dataSorteio: body.dataSorteio || sorteioAtual?.dataSorteio || "",
+    numeros,
+    createdAt: sorteioAtual?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 }
 
-function enrichRaffle(raffle) {
-  const metrics = calcRaffleMetrics(raffle);
-  return {
-    ...raffle,
-    ...metrics,
-    publicLink: `${raffle.baseUrl || "http://localhost:5173"}/#/sorteio/${raffle.slug || raffle.id}`,
-  };
+function encontrarSorteioPorSlugOuId(valor, lista) {
+  const busca = String(valor).trim();
+
+  return lista.find((s) => {
+    return (
+      String(s.id) === busca ||
+      String(s.slug) === busca
+    );
+  });
 }
 
-function numberAlreadyTaken(raffleId, numbers, ignoreParticipantId = null) {
-  const participants = getParticipantsByRaffleId(raffleId);
-
-  const taken = new Set();
-
-  for (const participant of participants) {
-    if (ignoreParticipantId && participant.id === ignoreParticipantId) continue;
-
-    const participantNumbers = Array.isArray(participant.numbers) ? participant.numbers : [];
-    participantNumbers.forEach((n) => taken.add(n));
-  }
-
-  return numbers.some((n) => taken.has(n));
-}
-
-/*
-  =========================================
-  MULTER / UPLOAD
-  =========================================
-*/
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadsDir);
+    cb(null, UPLOADS_DIR);
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname || "");
-    const filename = `${Date.now()}-${uuidv4()}${ext}`;
-    cb(null, filename);
+    const nome = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, nome);
   },
 });
 
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024,
-  },
+const upload = multer({ storage });
+
+/* =========================
+   HEALTH
+========================= */
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
 });
 
-/*
-  =========================================
-  ROTAS
-  =========================================
-*/
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    message: "API da Casa Premiada funcionando.",
-  });
-});
-
-app.post("/api/upload", upload.single("file"), (req, res) => {
+/* =========================
+   UPLOAD
+========================= */
+app.post("/api/upload", upload.single("imagem"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "Nenhum arquivo enviado." });
+      return res.status(400).json({ error: "Nenhuma imagem enviada." });
     }
 
     const url = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-
-    return res.json({
-      success: true,
-      filename: req.file.filename,
-      originalName: req.file.originalname,
-      url,
-    });
+    res.json({ url });
   } catch (error) {
     console.error("Erro no upload:", error);
-    return res.status(500).json({ error: "Erro ao enviar arquivo." });
+    res.status(500).json({ error: "Erro ao enviar imagem." });
   }
 });
 
-app.get("/api/admin/raffles", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const enriched = raffles
-      .map(enrichRaffle)
-      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+/* =========================
+   ADMIN
+========================= */
 
-    return res.json(enriched);
+// listar sorteios
+app.get("/api/admin/sorteios", (req, res) => {
+  try {
+    const sorteios = readSorteios().sort((a, b) => b.id - a.id);
+    res.json(sorteios);
   } catch (error) {
     console.error("Erro ao listar sorteios:", error);
-    return res.status(500).json({ error: "Erro ao listar sorteios." });
+    res.status(500).json({ error: "Erro ao listar sorteios." });
   }
 });
 
-app.get("/api/admin/raffles/:id", (req, res) => {
+// buscar 1 sorteio no admin
+app.get("/api/admin/sorteios/:id", (req, res) => {
   try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.id === req.params.id);
+    const sorteios = readSorteios();
+    const sorteio = encontrarSorteioPorSlugOuId(req.params.id, sorteios);
 
-    if (!raffle) {
+    if (!sorteio) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    return res.json(enrichRaffle(raffle));
+    res.json(sorteio);
   } catch (error) {
-    console.error("Erro ao buscar sorteio:", error);
-    return res.status(500).json({ error: "Erro ao buscar sorteio." });
+    console.error("Erro ao buscar sorteio admin:", error);
+    res.status(500).json({ error: "Erro ao buscar sorteio." });
   }
 });
 
-app.post("/api/admin/raffles", (req, res) => {
+// criar sorteio
+app.post("/api/admin/sorteios", (req, res) => {
   try {
-    const raffles = readJSON(rafflesFile);
+    const sorteios = readSorteios();
 
-    const title = String(req.body.title || "").trim();
-    const description = String(req.body.description || "").trim();
-    const drawDate = req.body.drawDate || "";
-    const pricePerNumber = Number(req.body.pricePerNumber || 0);
-    const totalNumbers = Number(req.body.totalNumbers || 0);
-    const whatsapp = onlyDigits(req.body.whatsapp || "");
-    const status = req.body.status || "draft";
-    const logoUrl = req.body.logoUrl || "";
-    const prizeImageUrl = req.body.prizeImageUrl || "";
-    const coverImageUrl = req.body.coverImageUrl || "";
-    const baseUrl = req.body.baseUrl || "http://localhost:5173";
+    const novo = normalizarSorteio(req.body);
 
-    if (!title) {
-      return res.status(400).json({ error: "Título é obrigatório." });
+    const slugJaExiste = sorteios.some(
+      (s) => String(s.slug) === String(novo.slug)
+    );
+
+    if (slugJaExiste) {
+      novo.slug = `${novo.slug}-${novo.id}`;
     }
 
-    if (!pricePerNumber || pricePerNumber <= 0) {
-      return res.status(400).json({ error: "Valor por número inválido." });
-    }
+    sorteios.push(novo);
+    saveSorteios(sorteios);
 
-    if (!totalNumbers || totalNumbers <= 0) {
-      return res.status(400).json({ error: "Quantidade de números inválida." });
-    }
-
-    const slugBase = slugify(title);
-    let slug = slugBase;
-    let count = 1;
-
-    while (raffles.some((r) => r.slug === slug)) {
-      count += 1;
-      slug = `${slugBase}-${count}`;
-    }
-
-    const raffle = {
-      id: uuidv4(),
-      title,
-      description,
-      drawDate,
-      pricePerNumber,
-      totalNumbers,
-      whatsapp,
-      status,
-      logoUrl,
-      prizeImageUrl,
-      coverImageUrl,
-      slug,
-      baseUrl,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    raffles.push(raffle);
-    writeJSON(rafflesFile, raffles);
-
-    return res.status(201).json(enrichRaffle(raffle));
+    res.status(201).json(novo);
   } catch (error) {
     console.error("Erro ao criar sorteio:", error);
-    return res.status(500).json({ error: "Erro ao criar sorteio." });
+    res.status(500).json({ error: "Erro ao criar sorteio." });
   }
 });
 
-app.put("/api/admin/raffles/:id", (req, res) => {
+// editar sorteio
+app.put("/api/admin/sorteios/:id", (req, res) => {
   try {
-    const raffles = readJSON(rafflesFile);
-    const index = raffles.findIndex((r) => r.id === req.params.id);
+    const sorteios = readSorteios();
+    const index = sorteios.findIndex(
+      (s) => String(s.id) === String(req.params.id)
+    );
 
     if (index === -1) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    const current = raffles[index];
+    const atual = sorteios[index];
+    const atualizado = normalizarSorteio(req.body, atual);
 
-    const title = String(req.body.title || current.title || "").trim();
-    const description = String(req.body.description ?? current.description ?? "").trim();
-    const drawDate = req.body.drawDate ?? current.drawDate ?? "";
-    const pricePerNumber = Number(req.body.pricePerNumber ?? current.pricePerNumber ?? 0);
-    const totalNumbers = Number(req.body.totalNumbers ?? current.totalNumbers ?? 0);
-    const whatsapp = onlyDigits(req.body.whatsapp ?? current.whatsapp ?? "");
-    const status = req.body.status ?? current.status ?? "draft";
-    const logoUrl = req.body.logoUrl ?? current.logoUrl ?? "";
-    const prizeImageUrl = req.body.prizeImageUrl ?? current.prizeImageUrl ?? "";
-    const coverImageUrl = req.body.coverImageUrl ?? current.coverImageUrl ?? "";
-    const baseUrl = req.body.baseUrl ?? current.baseUrl ?? "http://localhost:5173";
+    const slugDuplicado = sorteios.some(
+      (s, i) => i !== index && String(s.slug) === String(atualizado.slug)
+    );
 
-    if (!title) {
-      return res.status(400).json({ error: "Título é obrigatório." });
+    if (slugDuplicado) {
+      atualizado.slug = `${atualizado.slug}-${atualizado.id}`;
     }
 
-    if (!pricePerNumber || pricePerNumber <= 0) {
-      return res.status(400).json({ error: "Valor por número inválido." });
+    sorteios[index] = atualizado;
+    saveSorteios(sorteios);
+
+    res.json(atualizado);
+  } catch (error) {
+    console.error("Erro ao editar sorteio:", error);
+    res.status(500).json({ error: "Erro ao editar sorteio." });
+  }
+});
+
+// excluir sorteio
+app.delete("/api/admin/sorteios/:id", (req, res) => {
+  try {
+    const sorteios = readSorteios();
+    const novos = sorteios.filter(
+      (s) => String(s.id) !== String(req.params.id)
+    );
+
+    if (novos.length === sorteios.length) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    if (!totalNumbers || totalNumbers <= 0) {
-      return res.status(400).json({ error: "Quantidade de números inválida." });
+    saveSorteios(novos);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao excluir sorteio:", error);
+    res.status(500).json({ error: "Erro ao excluir sorteio." });
+  }
+});
+
+// resumo admin
+app.get("/api/admin/sorteios/:id/resumo", (req, res) => {
+  try {
+    const sorteios = readSorteios();
+    const sorteio = encontrarSorteioPorSlugOuId(req.params.id, sorteios);
+
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    let slug = current.slug || slugify(title);
+    const numeros = sorteio.numeros || [];
+    const vendidos = numeros.filter((n) => n.status === "pago").length;
+    const reservados = numeros.filter((n) => n.status === "reservado").length;
+    const disponiveis = numeros.filter((n) => n.status === "disponivel").length;
+    const arrecadado = vendidos * Number(sorteio.valorNumero || 0);
 
-    if (title !== current.title) {
-      const slugBase = slugify(title);
-      slug = slugBase;
-      let count = 1;
+    res.json({
+      vendidos,
+      reservados,
+      disponiveis,
+      arrecadado,
+      total: numeros.length,
+    });
+  } catch (error) {
+    console.error("Erro ao gerar resumo:", error);
+    res.status(500).json({ error: "Erro ao gerar resumo." });
+  }
+});
 
-      while (raffles.some((r) => r.id !== current.id && r.slug === slug)) {
-        count += 1;
-        slug = `${slugBase}-${count}`;
+// participantes simples
+app.get("/api/admin/sorteios/:id/participantes", (req, res) => {
+  try {
+    const sorteios = readSorteios();
+    const sorteio = encontrarSorteioPorSlugOuId(req.params.id, sorteios);
+
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    const agrupado = {};
+
+    for (const item of sorteio.numeros || []) {
+      if (!item.compradorTelefone && !item.compradorNome) continue;
+
+      const chave = `${item.compradorNome}__${item.compradorTelefone}`;
+      if (!agrupado[chave]) {
+        agrupado[chave] = {
+          nome: item.compradorNome || "",
+          telefone: item.compradorTelefone || "",
+          numeros: [],
+          status: [],
+        };
+      }
+
+      agrupado[chave].numeros.push(item.numero);
+      agrupado[chave].status.push(item.status);
+    }
+
+    res.json(Object.values(agrupado));
+  } catch (error) {
+    console.error("Erro ao buscar participantes:", error);
+    res.status(500).json({ error: "Erro ao buscar participantes." });
+  }
+});
+
+/* =========================
+   PÚBLICO
+========================= */
+
+// listar sorteios ativos
+app.get("/api/public/sorteios", (req, res) => {
+  try {
+    const sorteios = readSorteios()
+      .filter((s) => s.status !== "inativo")
+      .sort((a, b) => b.id - a.id);
+
+    res.json(sorteios);
+  } catch (error) {
+    console.error("Erro ao listar sorteios públicos:", error);
+    res.status(500).json({ error: "Erro ao listar sorteios." });
+  }
+});
+
+// buscar sorteio público por slug OU id
+app.get("/api/public/sorteios/:slug", (req, res) => {
+  try {
+    const valor = req.params.slug;
+    const sorteios = readSorteios();
+    const sorteio = encontrarSorteioPorSlugOuId(valor, sorteios);
+
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    res.json(sorteio);
+  } catch (error) {
+    console.error("Erro ao buscar sorteio público:", error);
+    res.status(500).json({ error: "Erro ao buscar sorteio." });
+  }
+});
+
+// reservar números
+app.post("/api/public/sorteios/:slug/reservar", (req, res) => {
+  try {
+    const valor = req.params.slug;
+    const { nome, telefone, numeros } = req.body;
+
+    if (!nome || !telefone) {
+      return res.status(400).json({ error: "Nome e telefone são obrigatórios." });
+    }
+
+    if (!Array.isArray(numeros) || !numeros.length) {
+      return res.status(400).json({ error: "Selecione pelo menos um número." });
+    }
+
+    const sorteios = readSorteios();
+    const index = sorteios.findIndex(
+      (s) => String(s.id) === String(valor) || String(s.slug) === String(valor)
+    );
+
+    if (index === -1) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    const sorteio = sorteios[index];
+    const agora = new Date().toISOString();
+
+    for (const numero of numeros) {
+      const item = sorteio.numeros.find((n) => Number(n.numero) === Number(numero));
+
+      if (!item) {
+        return res.status(400).json({ error: `Número ${numero} não existe.` });
+      }
+
+      if (item.status !== "disponivel") {
+        return res.status(400).json({ error: `Número ${numero} não está disponível.` });
       }
     }
 
-    const updated = {
-      ...current,
-      title,
-      description,
-      drawDate,
-      pricePerNumber,
-      totalNumbers,
-      whatsapp,
-      status,
-      logoUrl,
-      prizeImageUrl,
-      coverImageUrl,
-      baseUrl,
-      slug,
-      updatedAt: new Date().toISOString(),
-    };
-
-    raffles[index] = updated;
-    writeJSON(rafflesFile, raffles);
-
-    return res.json(enrichRaffle(updated));
-  } catch (error) {
-    console.error("Erro ao atualizar sorteio:", error);
-    return res.status(500).json({ error: "Erro ao atualizar sorteio." });
-  }
-});
-
-app.delete("/api/admin/raffles/:id", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const participants = readJSON(participantsFile);
-
-    const exists = raffles.some((r) => r.id === req.params.id);
-    if (!exists) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
+    for (const numero of numeros) {
+      const item = sorteio.numeros.find((n) => Number(n.numero) === Number(numero));
+      item.status = "reservado";
+      item.compradorNome = nome;
+      item.compradorTelefone = telefone;
+      item.reservadoEm = agora;
     }
 
-    const newRaffles = raffles.filter((r) => r.id !== req.params.id);
-    const newParticipants = participants.filter((p) => p.raffleId !== req.params.id);
+    sorteio.updatedAt = agora;
+    sorteios[index] = sorteio;
+    saveSorteios(sorteios);
 
-    writeJSON(rafflesFile, newRaffles);
-    writeJSON(participantsFile, newParticipants);
-
-    return res.json({ success: true });
-  } catch (error) {
-    console.error("Erro ao excluir sorteio:", error);
-    return res.status(500).json({ error: "Erro ao excluir sorteio." });
-  }
-});
-
-app.get("/api/admin/raffles/:id/participants", (req, res) => {
-  try {
-    const participants = getParticipantsByRaffleId(req.params.id).sort(
-      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
-    );
-
-    return res.json(participants);
-  } catch (error) {
-    console.error("Erro ao listar participantes:", error);
-    return res.status(500).json({ error: "Erro ao listar participantes." });
-  }
-});
-
-app.post("/api/admin/raffles/:id/participants", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.id === req.params.id);
-
-    if (!raffle) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const participants = readJSON(participantsFile);
-
-    const name = String(req.body.name || "").trim();
-    const phone = onlyDigits(req.body.phone || "");
-    const numbers = normalizeNumberArray(req.body.numbers || []);
-    const status = req.body.status || "reserved";
-    const amountPaid =
-      req.body.amountPaid != null
-        ? Number(req.body.amountPaid)
-        : numbers.length * Number(raffle.pricePerNumber || 0);
-
-    if (!name) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (!phone) {
-      return res.status(400).json({ error: "Telefone é obrigatório." });
-    }
-
-    if (!numbers.length) {
-      return res.status(400).json({ error: "Selecione ao menos um número." });
-    }
-
-    const invalidNumber = numbers.find((n) => n < 1 || n > Number(raffle.totalNumbers));
-    if (invalidNumber) {
-      return res.status(400).json({
-        error: `Número ${invalidNumber} está fora do intervalo permitido.`,
-      });
-    }
-
-    if (numberAlreadyTaken(raffle.id, numbers)) {
-      return res.status(400).json({
-        error: "Um ou mais números já foram reservados ou pagos.",
-      });
-    }
-
-    const participant = {
-      id: uuidv4(),
-      raffleId: raffle.id,
-      name,
-      phone,
-      numbers,
-      status,
-      amountPaid,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    participants.push(participant);
-    writeJSON(participantsFile, participants);
-
-    return res.status(201).json(participant);
-  } catch (error) {
-    console.error("Erro ao criar participante:", error);
-    return res.status(500).json({ error: "Erro ao criar participante." });
-  }
-});
-
-app.put("/api/admin/raffles/:raffleId/participants/:participantId", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.id === req.params.raffleId);
-
-    if (!raffle) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const participants = readJSON(participantsFile);
-    const index = participants.findIndex(
-      (p) => p.id === req.params.participantId && p.raffleId === req.params.raffleId
-    );
-
-    if (index === -1) {
-      return res.status(404).json({ error: "Participante não encontrado." });
-    }
-
-    const current = participants[index];
-
-    const name = String(req.body.name ?? current.name ?? "").trim();
-    const phone = onlyDigits(req.body.phone ?? current.phone ?? "");
-    const numbers = req.body.numbers
-      ? normalizeNumberArray(req.body.numbers)
-      : current.numbers || [];
-    const status = req.body.status ?? current.status ?? "reserved";
-    const amountPaid =
-      req.body.amountPaid != null
-        ? Number(req.body.amountPaid)
-        : Number(current.amountPaid || 0);
-
-    if (!name) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (!phone) {
-      return res.status(400).json({ error: "Telefone é obrigatório." });
-    }
-
-    if (!numbers.length) {
-      return res.status(400).json({ error: "Selecione ao menos um número." });
-    }
-
-    const invalidNumber = numbers.find((n) => n < 1 || n > Number(raffle.totalNumbers));
-    if (invalidNumber) {
-      return res.status(400).json({
-        error: `Número ${invalidNumber} está fora do intervalo permitido.`,
-      });
-    }
-
-    if (numberAlreadyTaken(raffle.id, numbers, current.id)) {
-      return res.status(400).json({
-        error: "Um ou mais números já foram reservados ou pagos.",
-      });
-    }
-
-    const updated = {
-      ...current,
-      name,
-      phone,
-      numbers,
-      status,
-      amountPaid,
-      updatedAt: new Date().toISOString(),
-    };
-
-    participants[index] = updated;
-    writeJSON(participantsFile, participants);
-
-    return res.json(updated);
-  } catch (error) {
-    console.error("Erro ao atualizar participante:", error);
-    return res.status(500).json({ error: "Erro ao atualizar participante." });
-  }
-});
-
-app.delete("/api/admin/raffles/:raffleId/participants/:participantId", (req, res) => {
-  try {
-    const participants = readJSON(participantsFile);
-
-    const exists = participants.some(
-      (p) => p.id === req.params.participantId && p.raffleId === req.params.raffleId
-    );
-
-    if (!exists) {
-      return res.status(404).json({ error: "Participante não encontrado." });
-    }
-
-    const filtered = participants.filter(
-      (p) => !(p.id === req.params.participantId && p.raffleId === req.params.raffleId)
-    );
-
-    writeJSON(participantsFile, filtered);
-
-    return res.json({ success: true });
-  } catch (error) {
-    console.error("Erro ao excluir participante:", error);
-    return res.status(500).json({ error: "Erro ao excluir participante." });
-  }
-});
-
-app.get("/api/raffles/:slug", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.slug === req.params.slug || r.id === req.params.slug);
-
-    if (!raffle) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const participants = getParticipantsByRaffleId(raffle.id);
-
-    const takenNumbers = participants.flatMap((p) => {
-      const nums = Array.isArray(p.numbers) ? p.numbers : [];
-      return nums.map((n) => ({
-        number: n,
-        status: p.status || "reserved",
-      }));
-    });
-
-    return res.json({
-      ...enrichRaffle(raffle),
-      takenNumbers,
-    });
-  } catch (error) {
-    console.error("Erro ao buscar sorteio público:", error);
-    return res.status(500).json({ error: "Erro ao buscar sorteio." });
-  }
-});
-
-app.post("/api/raffles/:slug/reserve", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.slug === req.params.slug || r.id === req.params.slug);
-
-    if (!raffle) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const name = String(req.body.name || "").trim();
-    const phone = onlyDigits(req.body.phone || "");
-    const numbers = normalizeNumberArray(req.body.numbers || []);
-    const status = req.body.status || "reserved";
-
-    if (!name) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (!phone) {
-      return res.status(400).json({ error: "Telefone é obrigatório." });
-    }
-
-    if (!numbers.length) {
-      return res.status(400).json({ error: "Escolha ao menos um número." });
-    }
-
-    const invalidNumber = numbers.find((n) => n < 1 || n > Number(raffle.totalNumbers));
-    if (invalidNumber) {
-      return res.status(400).json({
-        error: `Número ${invalidNumber} inválido para este sorteio.`,
-      });
-    }
-
-    if (numberAlreadyTaken(raffle.id, numbers)) {
-      return res.status(400).json({
-        error: "Um ou mais números escolhidos já não estão disponíveis.",
-      });
-    }
-
-    const participants = readJSON(participantsFile);
-
-    const participant = {
-      id: uuidv4(),
-      raffleId: raffle.id,
-      name,
-      phone,
-      numbers,
-      status,
-      amountPaid: numbers.length * Number(raffle.pricePerNumber || 0),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    participants.push(participant);
-    writeJSON(participantsFile, participants);
-
-    return res.status(201).json({
+    // aqui depois a gente pluga Mercado Pago / Pagar.me / Pix automático
+    res.json({
       success: true,
-      participant,
       message: "Reserva realizada com sucesso.",
+      sorteioId: sorteio.id,
+      slug: sorteio.slug,
+      numeros,
+      total: numeros.length * Number(sorteio.valorNumero || 0),
     });
   } catch (error) {
     console.error("Erro ao reservar números:", error);
-    return res.status(500).json({ error: "Erro ao reservar números." });
+    res.status(500).json({ error: "Erro ao reservar números." });
   }
 });
 
-app.post("/api/admin/raffles/:raffleId/participants/:participantId/pay", (req, res) => {
-  try {
-    const participants = readJSON(participantsFile);
+/* =========================
+   SERVIR FRONTEND
+========================= */
 
-    const index = participants.findIndex(
-      (p) => p.id === req.params.participantId && p.raffleId === req.params.raffleId
-    );
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
 
-    if (index === -1) {
-      return res.status(404).json({ error: "Participante não encontrado." });
+  app.get(/^\/(?!api|uploads).*/, (req, res) => {
+    res.sendFile(path.join(DIST_DIR, "index.html"));
+  });
+} else if (fs.existsSync(PUBLIC_DIR)) {
+  app.use(express.static(PUBLIC_DIR));
+
+  app.get(/^\/(?!api|uploads).*/, (req, res) => {
+    const indexPath = path.join(PUBLIC_DIR, "index.html");
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath);
     }
+    res.status(404).send("Frontend não encontrado.");
+  });
+}
 
-    participants[index] = {
-      ...participants[index],
-      status: "paid",
-      amountPaid:
-        req.body.amountPaid != null
-          ? Number(req.body.amountPaid)
-          : Number(participants[index].amountPaid || 0),
-      updatedAt: new Date().toISOString(),
-    };
-
-    writeJSON(participantsFile, participants);
-
-    return res.json({
-      success: true,
-      participant: participants[index],
-    });
-  } catch (error) {
-    console.error("Erro ao confirmar pagamento:", error);
-    return res.status(500).json({ error: "Erro ao confirmar pagamento." });
-  }
-});
-
-app.get("/api/admin/dashboard", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const participants = readJSON(participantsFile);
-
-    let totalRaised = 0;
-    let totalSold = 0;
-    let totalReserved = 0;
-    let totalPaid = 0;
-
-    for (const participant of participants) {
-      const qty = Array.isArray(participant.numbers) ? participant.numbers.length : 0;
-
-      if (participant.status === "reserved") totalReserved += qty;
-      if (participant.status === "paid") {
-        totalPaid += qty;
-        totalSold += qty;
-        totalRaised += Number(participant.amountPaid || 0);
-      }
-      if (participant.status === "sold") {
-        totalSold += qty;
-        totalRaised += Number(participant.amountPaid || 0);
-      }
-    }
-
-    return res.json({
-      rafflesCount: raffles.length,
-      participantsCount: participants.length,
-      totalRaised,
-      totalSold,
-      totalReserved,
-      totalPaid,
-    });
-  } catch (error) {
-    console.error("Erro ao carregar dashboard:", error);
-    return res.status(500).json({ error: "Erro ao carregar dashboard." });
-  }
-});
-
-app.get("/api/admin/raffles/:id/participants/csv", (req, res) => {
-  try {
-    const raffles = readJSON(rafflesFile);
-    const raffle = raffles.find((r) => r.id === req.params.id);
-
-    if (!raffle) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const participants = getParticipantsByRaffleId(raffle.id);
-
-    let csv = "Nome;Telefone;Números Comprados;Status;Valor Pago\n";
-
-    participants.forEach((p) => {
-      const name = (p.name || "").replace(/;/g, ",");
-      const phone = (p.phone || "").replace(/;/g, ",");
-      const numbers = Array.isArray(p.numbers) ? p.numbers.join(", ") : "";
-      const status = (p.status || "").replace(/;/g, ",");
-      const amountPaid = Number(p.amountPaid || 0);
-
-      csv += `"${name}";"${phone}";"${numbers}";"${status}";"${amountPaid}"\n`;
-    });
-
-    const filename = `${slugify(raffle.title || "participantes")}-participantes.csv`;
-
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-
-    return res.send("\uFEFF" + csv);
-  } catch (error) {
-    console.error("Erro ao exportar CSV:", error);
-    return res.status(500).json({ error: "Erro ao exportar CSV." });
-  }
-});
-
+/* =========================
+   START
+========================= */
 app.listen(PORT, () => {
-  console.log(`Servidor rodando em http://localhost:${PORT}`);
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
