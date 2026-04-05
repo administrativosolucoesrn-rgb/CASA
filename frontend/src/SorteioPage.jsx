@@ -1,263 +1,162 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
-
-function onlyDigits(value = "") {
-  return String(value).replace(/\D/g, "");
-}
-
-function formatPhone(value = "") {
-  const digits = onlyDigits(value).slice(0, 11);
-
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
-}
-
-function currencyBRL(value) {
-  return Number(value || 0).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
-}
-
-function formatDrawDate(dateString) {
-  if (!dateString) return "Data a definir";
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return "Data a definir";
-
-  return date.toLocaleString("pt-BR");
-}
-
-function chunkArray(array, size) {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += size) {
-    chunks.push(array.slice(i, i + size));
-  }
-  return chunks;
-}
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 export default function SorteioPage() {
   const { slug } = useParams();
 
-  const [raffle, setRaffle] = useState(null);
+  const [sorteio, setSorteio] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-
   const [selectedNumbers, setSelectedNumbers] = useState([]);
-  const [buyerName, setBuyerName] = useState(localStorage.getItem("buyer_name") || "");
-  const [buyerPhone, setBuyerPhone] = useState(localStorage.getItem("buyer_phone") || "");
-  const [showInfoBox, setShowInfoBox] = useState(false);
+  const [showNumeros, setShowNumeros] = useState(true);
+  const [comprador, setComprador] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("cp_cliente")) || { nome: "", telefone: "" };
+    } catch {
+      return { nome: "", telefone: "" };
+    }
+  });
 
   useEffect(() => {
-    loadRaffle();
+    carregarSorteio();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
-  useEffect(() => {
-    localStorage.setItem("buyer_name", buyerName);
-  }, [buyerName]);
-
-  useEffect(() => {
-    localStorage.setItem("buyer_phone", buyerPhone);
-  }, [buyerPhone]);
-
-  async function safeJson(res) {
-    const text = await res.text();
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch {
-      return {};
-    }
-  }
-
-  async function loadRaffle() {
+  async function carregarSorteio() {
     try {
       setLoading(true);
-      setError("");
-      setMessage("");
-
-      const raffleSlug = slug || "";
-      const res = await fetch(`${API_BASE}/api/raffles/${raffleSlug}`);
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Sorteio não encontrado.");
-      }
-
-      setRaffle(data);
+      const res = await fetch(`${API_URL}/api/public/sorteios/${slug}`);
+      const data = await res.json();
+      setSorteio(data);
     } catch (err) {
-      setError(err.message || "Erro ao carregar sorteio.");
-      setRaffle(null);
+      console.error(err);
+      setSorteio(null);
     } finally {
       setLoading(false);
     }
   }
 
-  const takenMap = useMemo(() => {
-    const map = new Map();
+  useEffect(() => {
+    localStorage.setItem("cp_cliente", JSON.stringify(comprador));
+  }, [comprador]);
 
-    if (!raffle?.takenNumbers) return map;
+  const total = useMemo(() => {
+    const valor = Number(sorteio?.valorNumero || 0);
+    return selectedNumbers.length * valor;
+  }, [selectedNumbers, sorteio]);
 
-    raffle.takenNumbers.forEach((item) => {
-      map.set(Number(item.number), item.status || "reserved");
-    });
+  const numerosDisponiveis = useMemo(() => {
+    if (!sorteio?.numeros) return [];
+    return sorteio.numeros;
+  }, [sorteio]);
 
-    return map;
-  }, [raffle]);
-
-  const availableNumbers = useMemo(() => {
-    if (!raffle?.totalNumbers) return [];
-
-    const total = Number(raffle.totalNumbers || 0);
-    const all = Array.from({ length: total }, (_, i) => i + 1);
-
-    return all.filter((num) => !takenMap.has(num));
-  }, [raffle, takenMap]);
-
-  const totalAmount = useMemo(() => {
-    return selectedNumbers.length * Number(raffle?.pricePerNumber || 0);
-  }, [selectedNumbers, raffle]);
-
-  const numberGrid = useMemo(() => {
-    if (!raffle?.totalNumbers) return [];
-    const total = Number(raffle.totalNumbers || 0);
-    return chunkArray(Array.from({ length: total }, (_, i) => i + 1), 5);
-  }, [raffle]);
-
-  function toggleNumber(number) {
-    if (!raffle) return;
-    if (takenMap.has(number)) return;
-
-    setMessage("");
-    setError("");
+  function toggleNumero(numeroObj) {
+    if (numeroObj.status !== "disponivel") return;
 
     setSelectedNumbers((prev) => {
-      if (prev.includes(number)) {
-        return prev.filter((n) => n !== number);
+      const jaExiste = prev.includes(numeroObj.numero);
+      if (jaExiste) {
+        return prev.filter((n) => n !== numeroObj.numero);
       }
-      return [...prev, number].sort((a, b) => a - b);
+      return [...prev, numeroObj.numero];
     });
-
-    setShowInfoBox(true);
   }
 
-  function pickRandomNumbers(quantity) {
-    if (!raffle) return;
+  function escolherAleatorios(qtd) {
+    const livres = numerosDisponiveis
+      .filter((n) => n.status === "disponivel" && !selectedNumbers.includes(n.numero))
+      .map((n) => n.numero);
 
-    setMessage("");
-    setError("");
+    if (!livres.length) return;
 
-    const available = [...availableNumbers];
+    const embaralhados = [...livres].sort(() => Math.random() - 0.5);
+    const novos = embaralhados.slice(0, qtd);
 
-    if (available.length === 0) {
-      setError("Não há números disponíveis.");
-      return;
-    }
-
-    const qty = Math.min(quantity, available.length);
-
-    for (let i = available.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [available[i], available[j]] = [available[j], available[i]];
-    }
-
-    const chosen = available.slice(0, qty).sort((a, b) => a - b);
-    setSelectedNumbers(chosen);
-    setShowInfoBox(true);
+    setSelectedNumbers((prev) => [...prev, ...novos]);
+    setShowNumeros(false);
   }
 
-  async function handleReserve() {
-    if (!raffle) return;
+  function limparSelecao() {
+    setSelectedNumbers([]);
+  }
 
-    setMessage("");
-    setError("");
-
-    if (!buyerName.trim()) {
-      setError("Informe seu nome completo.");
+  async function reservarNumeros() {
+    if (!comprador.nome || !comprador.telefone) {
+      alert("Preencha nome e telefone.");
       return;
     }
 
-    if (!onlyDigits(buyerPhone)) {
-      setError("Informe seu telefone/WhatsApp.");
-      return;
-    }
-
-    if (selectedNumbers.length === 0) {
-      setError("Escolha ao menos um número.");
+    if (!selectedNumbers.length) {
+      alert("Selecione pelo menos um número.");
       return;
     }
 
     try {
-      setSaving(true);
-
-      const res = await fetch(`${API_BASE}/api/raffles/${raffle.slug || raffle.id}/reserve`, {
+      const res = await fetch(`${API_URL}/api/public/sorteios/${slug}/reservar`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: buyerName.trim(),
-          phone: onlyDigits(buyerPhone),
-          numbers: selectedNumbers,
-          status: "reserved",
+          nome: comprador.nome,
+          telefone: comprador.telefone,
+          numeros: selectedNumbers,
         }),
       });
 
-      const data = await safeJson(res);
+      const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data?.error || "Erro ao reservar números.");
+        alert(data?.error || "Erro ao reservar números.");
+        return;
       }
 
-      setMessage("Números reservados com sucesso.");
+      if (data?.checkoutUrl) {
+        window.location.href = data.checkoutUrl;
+        return;
+      }
+
+      if (data?.pixQrCodeBase64 || data?.pixCopiaECola) {
+        localStorage.setItem("cp_pix", JSON.stringify(data));
+        window.location.href = `/pagamento/${slug}`;
+        return;
+      }
+
+      alert("Reserva realizada com sucesso.");
       setSelectedNumbers([]);
-      await loadRaffle();
+      carregarSorteio();
     } catch (err) {
-      setError(err.message || "Erro ao reservar números.");
-    } finally {
-      setSaving(false);
+      console.error(err);
+      alert("Erro ao reservar números.");
     }
   }
 
-  function getNumberStyle(number) {
-    const status = takenMap.get(number);
-    const isSelected = selectedNumbers.includes(number);
+  function copiarLink() {
+    navigator.clipboard.writeText(window.location.href);
+    alert("Link copiado.");
+  }
 
-    if (isSelected) {
-      return {
-        ...styles.numberButton,
-        background: "#16a34a",
-        color: "#fff",
-        border: "1px solid #16a34a",
-      };
+  function compartilhar() {
+    if (navigator.share) {
+      navigator.share({
+        title: sorteio?.titulo || "Sorteio",
+        text: "Participe deste sorteio",
+        url: window.location.href,
+      });
+    } else {
+      copiarLink();
     }
+  }
 
-    if (status === "paid") {
-      return {
-        ...styles.numberButton,
-        background: "#dcfce7",
-        color: "#166534",
-        border: "1px solid #86efac",
-        cursor: "not-allowed",
-      };
-    }
+  function formatarMoeda(valor) {
+    return Number(valor || 0).toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+    });
+  }
 
-    if (status === "reserved" || status === "sold") {
-      return {
-        ...styles.numberButton,
-        background: "#fee2e2",
-        color: "#991b1b",
-        border: "1px solid #fecaca",
-        cursor: "not-allowed",
-      };
-    }
-
-    return styles.numberButton;
+  function formatarNumero(numero) {
+    const digitos = String(sorteio?.totalNumeros || 100).length;
+    return String(numero).padStart(digitos, "0");
   }
 
   if (loading) {
@@ -268,10 +167,10 @@ export default function SorteioPage() {
     );
   }
 
-  if (error && !raffle) {
+  if (!sorteio) {
     return (
       <div style={styles.page}>
-        <div style={styles.centerBox}>{error || "Sorteio não encontrado."}</div>
+        <div style={styles.centerBox}>Sorteio não encontrado.</div>
       </div>
     );
   }
@@ -279,199 +178,184 @@ export default function SorteioPage() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <section style={styles.heroCard}>
-          {raffle?.coverImageUrl ? (
-            <img
-              src={raffle.coverImageUrl}
-              alt="Capa"
-              style={styles.coverImage}
-            />
-          ) : null}
+        <div style={styles.heroCard}>
+          <div style={styles.logoWrap}>
+            {sorteio.logoUrl ? (
+              <img src={sorteio.logoUrl} alt="Logo" style={styles.logo} />
+            ) : (
+              <div style={styles.logoPlaceholder}>CASA PREMIADA RIBEIRÃO</div>
+            )}
+          </div>
+
+          <div style={styles.imageWrap}>
+            {sorteio.fotoPremio ? (
+              <img src={sorteio.fotoPremio} alt={sorteio.titulo} style={styles.heroImage} />
+            ) : (
+              <div style={styles.imagePlaceholder}>Imagem do prêmio</div>
+            )}
+          </div>
 
           <div style={styles.heroContent}>
-            <div style={styles.brandRow}>
-              {raffle?.logoUrl ? (
-                <img src={raffle.logoUrl} alt="Logo" style={styles.logo} />
-              ) : null}
+            <div style={styles.badge}>Sorteio disponível</div>
+            <h1 style={styles.title}>{sorteio.titulo}</h1>
+            {sorteio.descricao && <p style={styles.description}>{sorteio.descricao}</p>}
 
-              <div>
-                <div style={styles.brandName}>Casa Premiada Ribeirão</div>
-                <div style={styles.brandSub}>Escolha seus números e participe</div>
+            <div style={styles.priceRow}>
+              <div style={styles.priceBox}>
+                <span style={styles.priceLabel}>Valor por número</span>
+                <strong style={styles.priceValue}>{formatarMoeda(sorteio.valorNumero)}</strong>
+              </div>
+
+              <div style={styles.priceBox}>
+                <span style={styles.priceLabel}>Total de números</span>
+                <strong style={styles.priceValue}>{sorteio.totalNumeros}</strong>
               </div>
             </div>
 
-            <div style={styles.heroGrid}>
-              <div style={styles.prizeMediaBox}>
-                {raffle?.prizeImageUrl ? (
-                  <img
-                    src={raffle.prizeImageUrl}
-                    alt={raffle?.title || "Prêmio"}
-                    style={styles.prizeImage}
-                  />
-                ) : (
-                  <div style={styles.placeholderPrize}>Imagem do prêmio</div>
-                )}
-              </div>
-
-              <div style={styles.heroInfo}>
-                <h1 style={styles.title}>{raffle?.title || "Sorteio"}</h1>
-
-                <div style={styles.infoTags}>
-                  <span style={styles.tag}>
-                    {currencyBRL(raffle?.pricePerNumber || 0)} por número
-                  </span>
-                  <span style={styles.tag}>
-                    Sorteio: {formatDrawDate(raffle?.drawDate)}
-                  </span>
-                </div>
-
-                <p style={styles.description}>
-                  {raffle?.description || "Escolha seus números e participe."}
-                </p>
-
-                <div style={styles.summaryRow}>
-                  <div style={styles.summaryCard}>
-                    <small style={styles.summaryLabel}>Disponíveis</small>
-                    <strong style={styles.summaryValue}>{availableNumbers.length}</strong>
-                  </div>
-                  <div style={styles.summaryCard}>
-                    <small style={styles.summaryLabel}>Reservados/Vendidos</small>
-                    <strong style={styles.summaryValue}>
-                      {Number(raffle?.totalNumbers || 0) - availableNumbers.length}
-                    </strong>
-                  </div>
-                  <div style={styles.summaryCard}>
-                    <small style={styles.summaryLabel}>Total de números</small>
-                    <strong style={styles.summaryValue}>{raffle?.totalNumbers || 0}</strong>
-                  </div>
-                </div>
-
-                <div style={styles.quickActions}>
-                  <button
-                    type="button"
-                    style={styles.greenButton}
-                    onClick={() => pickRandomNumbers(5)}
-                  >
-                    5 números aleatórios
-                  </button>
-
-                  <button
-                    type="button"
-                    style={styles.outlineGreenButton}
-                    onClick={() => pickRandomNumbers(10)}
-                  >
-                    10 números aleatórios
-                  </button>
-                </div>
-              </div>
+            <div style={styles.actionRow}>
+              <button style={styles.secondaryButton} onClick={copiarLink}>
+                Copiar link
+              </button>
+              <button style={styles.primaryOutlineButton} onClick={compartilhar}>
+                Compartilhar
+              </button>
             </div>
           </div>
-        </section>
+        </div>
 
-        {error ? <div style={styles.errorBox}>{error}</div> : null}
-        {message ? <div style={styles.successBox}>{message}</div> : null}
+        <div style={styles.infoGrid}>
+          <div style={styles.infoCard}>
+            <div style={styles.infoTitle}>Como funciona</div>
+            <div style={styles.infoText}>
+              Escolha seus números, preencha nome e WhatsApp e finalize o pagamento.
+            </div>
+          </div>
 
-        <section style={styles.sectionCard}>
-          <div style={styles.sectionHeader}>
+          <div style={styles.infoCard}>
+            <div style={styles.infoTitle}>Pagamento</div>
+            <div style={styles.infoText}>
+              Após reservar, você será direcionado para a etapa de pagamento.
+            </div>
+          </div>
+
+          <div style={styles.infoCard}>
+            <div style={styles.infoTitle}>Resultado</div>
+            <div style={styles.infoText}>
+              O sorteio será realizado conforme as regras informadas pelo organizador.
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.cardHeader}>
             <div>
-              <h2 style={styles.sectionTitle}>Escolha seus números</h2>
-              <p style={styles.sectionSubtitle}>
-                Verde = selecionado | Vermelho = indisponível | Branco = disponível
-              </p>
+              <h2 style={styles.cardTitle}>Seus dados</h2>
+              <p style={styles.cardSubtitle}>Esses dados ficam salvos para futuras compras.</p>
+            </div>
+          </div>
+
+          <div style={styles.formGrid}>
+            <input
+              style={styles.input}
+              placeholder="Nome completo"
+              value={comprador.nome}
+              onChange={(e) => setComprador((prev) => ({ ...prev, nome: e.target.value }))}
+            />
+            <input
+              style={styles.input}
+              placeholder="Número / WhatsApp"
+              value={comprador.telefone}
+              onChange={(e) => setComprador((prev) => ({ ...prev, telefone: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.cardHeaderRow}>
+            <div>
+              <h2 style={styles.cardTitle}>Escolha seus números</h2>
+              <p style={styles.cardSubtitle}>Selecione manualmente ou escolha números aleatórios.</p>
             </div>
 
             <button
-              type="button"
-              style={styles.infoButton}
-              onClick={() => setShowInfoBox((prev) => !prev)}
+              style={styles.greenButton}
+              onClick={() => setShowNumeros((prev) => !prev)}
             >
-              Ver informações
+              {showNumeros ? "Ocultar números" : "Escolher números"}
             </button>
           </div>
 
-          <div style={styles.numberGridWrapper}>
-            {numberGrid.map((row, rowIndex) => (
-              <div key={`row-${rowIndex}`} style={styles.numberRow}>
-                {row.map((number) => (
-                  <button
-                    key={number}
-                    type="button"
-                    style={getNumberStyle(number)}
-                    onClick={() => toggleNumber(number)}
-                    disabled={takenMap.has(number)}
-                  >
-                    {number}
-                  </button>
-                ))}
-              </div>
-            ))}
+          <div style={styles.quickButtons}>
+            <button style={styles.quickButton} onClick={() => escolherAleatorios(5)}>
+              +5 aleatórios
+            </button>
+            <button style={styles.quickButton} onClick={() => escolherAleatorios(10)}>
+              +10 aleatórios
+            </button>
+            <button style={styles.quickButton} onClick={() => escolherAleatorios(20)}>
+              +20 aleatórios
+            </button>
+            <button style={styles.quickButtonDanger} onClick={limparSelecao}>
+              Limpar
+            </button>
           </div>
-        </section>
 
-        {showInfoBox ? (
-          <section style={styles.sectionCard}>
-            <h2 style={styles.sectionTitle}>Seus dados</h2>
+          {showNumeros && (
+            <div style={styles.gridNumeros}>
+              {numerosDisponiveis.map((item) => {
+                const ativo = selectedNumbers.includes(item.numero);
+                const reservado = item.status === "reservado";
+                const pago = item.status === "pago";
 
-            <div style={styles.formGrid}>
-              <div style={styles.field}>
-                <label style={styles.label}>Nome completo</label>
-                <input
-                  style={styles.input}
-                  value={buyerName}
-                  onChange={(e) => setBuyerName(e.target.value)}
-                  placeholder="Digite seu nome completo"
-                />
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Número / WhatsApp</label>
-                <input
-                  style={styles.input}
-                  value={buyerPhone}
-                  onChange={(e) => setBuyerPhone(formatPhone(e.target.value))}
-                  placeholder="(16) 99999-9999"
-                />
-              </div>
+                return (
+                  <button
+                    key={item.numero}
+                    onClick={() => toggleNumero(item)}
+                    style={{
+                      ...styles.numeroButton,
+                      ...(ativo ? styles.numeroAtivo : {}),
+                      ...(reservado ? styles.numeroReservado : {}),
+                      ...(pago ? styles.numeroPago : {}),
+                    }}
+                    disabled={reservado || pago}
+                  >
+                    {formatarNumero(item.numero)}
+                  </button>
+                );
+              })}
             </div>
-          </section>
-        ) : null}
+          )}
+        </div>
 
-        <div style={styles.bottomSpace} />
+        <div style={styles.legendRow}>
+          <div style={styles.legendItem}>
+            <span style={{ ...styles.legendColor, background: "#ffffff", border: "1px solid #d1d5db" }} />
+            Disponível
+          </div>
+          <div style={styles.legendItem}>
+            <span style={{ ...styles.legendColor, background: "#16a34a" }} />
+            Selecionado
+          </div>
+          <div style={styles.legendItem}>
+            <span style={{ ...styles.legendColor, background: "#facc15" }} />
+            Reservado
+          </div>
+          <div style={styles.legendItem}>
+            <span style={{ ...styles.legendColor, background: "#111827" }} />
+            Pago
+          </div>
+        </div>
       </div>
 
       <div style={styles.bottomBar}>
-        <div style={styles.bottomBarContent}>
-          <div>
-            <div style={styles.bottomLabel}>Números selecionados</div>
-            <div style={styles.bottomSelected}>
-              {selectedNumbers.length > 0 ? selectedNumbers.join(", ") : "Nenhum número"}
-            </div>
-          </div>
-
-          <div style={styles.bottomPriceBox}>
-            <div style={styles.bottomLabel}>Total</div>
-            <div style={styles.bottomPrice}>{currencyBRL(totalAmount)}</div>
-          </div>
-
-          <div style={styles.bottomButtons}>
-            <button
-              type="button"
-              style={styles.secondaryButton}
-              onClick={() => setShowInfoBox(true)}
-            >
-              Ver informações
-            </button>
-
-            <button
-              type="button"
-              style={styles.primaryButton}
-              onClick={handleReserve}
-              disabled={saving || selectedNumbers.length === 0}
-            >
-              {saving ? "Reservando..." : "Reservar"}
-            </button>
-          </div>
+        <div style={styles.bottomSummary}>
+          <div style={styles.bottomCount}>{selectedNumbers.length} número(s)</div>
+          <div style={styles.bottomValue}>{formatarMoeda(total)}</div>
         </div>
+
+        <button style={styles.bottomButton} onClick={reservarNumeros}>
+          Reservar / Pagar
+        </button>
       </div>
     </div>
   );
@@ -480,322 +364,393 @@ export default function SorteioPage() {
 const styles = {
   page: {
     minHeight: "100vh",
-    background: "#f4f6fb",
+    background: "#f5f7fb",
+    paddingBottom: "110px",
     fontFamily: "Arial, sans-serif",
-    color: "#0f172a",
   },
+
   container: {
-    maxWidth: "980px",
+    width: "100%",
+    maxWidth: "720px",
     margin: "0 auto",
-    padding: "14px 14px 0 14px",
+    padding: "14px",
   },
+
   centerBox: {
-    maxWidth: "900px",
+    maxWidth: "720px",
     margin: "40px auto",
     background: "#fff",
-    padding: "24px",
-    borderRadius: "20px",
-    boxShadow: "0 10px 30px rgba(15,23,42,0.08)",
+    borderRadius: "18px",
+    padding: "30px",
+    textAlign: "center",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
   },
+
   heroCard: {
     background: "#fff",
     borderRadius: "24px",
     overflow: "hidden",
-    boxShadow: "0 10px 30px rgba(15,23,42,0.08)",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
     marginBottom: "16px",
+    border: "1px solid #e5e7eb",
   },
-  coverImage: {
-    width: "100%",
-    height: "180px",
-    objectFit: "cover",
-    display: "block",
+
+  logoWrap: {
+    padding: "14px 14px 0",
   },
-  heroContent: {
-    padding: "16px",
-  },
-  brandRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    marginBottom: "16px",
-    flexWrap: "wrap",
-  },
+
   logo: {
-    width: "58px",
-    height: "58px",
-    objectFit: "cover",
-    borderRadius: "16px",
-    border: "1px solid #e5e7eb",
-  },
-  brandName: {
-    fontSize: "20px",
-    fontWeight: 800,
-    color: "#0f172a",
-  },
-  brandSub: {
-    fontSize: "14px",
-    color: "#64748b",
-    marginTop: "4px",
-  },
-  heroGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: "16px",
-  },
-  prizeMediaBox: {
     width: "100%",
+    maxHeight: "70px",
+    objectFit: "contain",
+    borderRadius: "12px",
+    background: "#fff",
   },
-  prizeImage: {
+
+  logoPlaceholder: {
     width: "100%",
+    background: "#166534",
+    color: "#fff",
+    borderRadius: "14px",
+    padding: "16px",
+    textAlign: "center",
+    fontWeight: "800",
+    fontSize: "18px",
+    letterSpacing: "0.5px",
+  },
+
+  imageWrap: {
+    padding: "14px",
+    paddingBottom: "0",
+  },
+
+  heroImage: {
+    width: "100%",
+    display: "block",
     borderRadius: "20px",
     objectFit: "cover",
-    maxHeight: "360px",
-    border: "1px solid #e5e7eb",
+    maxHeight: "420px",
+    background: "#f3f4f6",
   },
-  placeholderPrize: {
+
+  imagePlaceholder: {
     width: "100%",
-    minHeight: "240px",
+    minHeight: "260px",
     borderRadius: "20px",
-    border: "1px dashed #cbd5e1",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "#64748b",
-    background: "#f8fafc",
+    background: "#eef2f7",
+    color: "#6b7280",
+    fontWeight: "700",
   },
-  heroInfo: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
+
+  heroContent: {
+    padding: "18px",
   },
-  title: {
-    margin: 0,
-    fontSize: "30px",
-    lineHeight: 1.1,
-    fontWeight: 900,
-  },
-  infoTags: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "8px",
-  },
-  tag: {
-    background: "#eef2ff",
-    color: "#3730a3",
-    borderRadius: "999px",
+
+  badge: {
+    display: "inline-block",
+    background: "#dcfce7",
+    color: "#166534",
+    fontWeight: "700",
+    fontSize: "12px",
     padding: "8px 12px",
-    fontSize: "13px",
-    fontWeight: 700,
+    borderRadius: "999px",
+    marginBottom: "12px",
   },
+
+  title: {
+    fontSize: "28px",
+    lineHeight: 1.15,
+    margin: "0 0 10px",
+    color: "#111827",
+  },
+
   description: {
-    margin: 0,
-    color: "#475569",
     fontSize: "15px",
-    lineHeight: 1.6,
+    lineHeight: 1.5,
+    color: "#4b5563",
+    margin: "0 0 16px",
   },
-  summaryRow: {
+
+  priceRow: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, 1fr)",
+    gridTemplateColumns: "1fr 1fr",
     gap: "10px",
+    marginBottom: "14px",
   },
-  summaryCard: {
-    background: "#f8fafc",
-    border: "1px solid #e2e8f0",
+
+  priceBox: {
+    background: "#f9fafb",
+    border: "1px solid #e5e7eb",
     borderRadius: "18px",
     padding: "14px",
   },
-  summaryLabel: {
+
+  priceLabel: {
     display: "block",
-    color: "#64748b",
-    marginBottom: "8px",
     fontSize: "12px",
+    color: "#6b7280",
+    marginBottom: "6px",
   },
-  summaryValue: {
-    fontSize: "24px",
-    fontWeight: 900,
+
+  priceValue: {
+    fontSize: "20px",
+    color: "#111827",
   },
-  quickActions: {
-    display: "flex",
-    gap: "10px",
-    flexWrap: "wrap",
-    marginTop: "4px",
-  },
-  greenButton: {
-    background: "#16a34a",
-    color: "#fff",
-    border: "none",
-    borderRadius: "14px",
-    padding: "12px 16px",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  outlineGreenButton: {
-    background: "#fff",
-    color: "#16a34a",
-    border: "1px solid #16a34a",
-    borderRadius: "14px",
-    padding: "12px 16px",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  sectionCard: {
-    background: "#fff",
-    borderRadius: "24px",
-    padding: "16px",
-    boxShadow: "0 10px 30px rgba(15,23,42,0.08)",
-    marginBottom: "16px",
-  },
-  sectionHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "12px",
-    alignItems: "center",
-    flexWrap: "wrap",
-    marginBottom: "14px",
-  },
-  sectionTitle: {
-    margin: 0,
-    fontSize: "28px",
-    fontWeight: 900,
-  },
-  sectionSubtitle: {
-    margin: "6px 0 0 0",
-    color: "#64748b",
-    fontSize: "14px",
-  },
-  infoButton: {
-    background: "#16a34a",
-    color: "#fff",
-    border: "none",
-    borderRadius: "14px",
-    padding: "12px 16px",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  numberGridWrapper: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-  },
-  numberRow: {
+
+  actionRow: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, 1fr)",
+    gridTemplateColumns: "1fr 1fr",
     gap: "10px",
   },
-  numberButton: {
-    background: "#fff",
-    color: "#0f172a",
-    border: "1px solid #dbe2ea",
+
+  secondaryButton: {
+    height: "48px",
     borderRadius: "14px",
-    padding: "14px 8px",
-    fontSize: "16px",
-    fontWeight: 800,
+    border: "1px solid #d1d5db",
+    background: "#fff",
+    fontWeight: "700",
+    fontSize: "15px",
     cursor: "pointer",
-    minHeight: "52px",
   },
-  formGrid: {
+
+  primaryOutlineButton: {
+    height: "48px",
+    borderRadius: "14px",
+    border: "1px solid #16a34a",
+    background: "#f0fdf4",
+    color: "#166534",
+    fontWeight: "700",
+    fontSize: "15px",
+    cursor: "pointer",
+  },
+
+  infoGrid: {
     display: "grid",
     gridTemplateColumns: "1fr",
     gap: "12px",
+    marginBottom: "16px",
   },
-  field: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
+
+  infoCard: {
+    background: "#fff",
+    borderRadius: "20px",
+    padding: "16px",
+    border: "1px solid #e5e7eb",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.05)",
   },
-  label: {
+
+  infoTitle: {
+    fontSize: "16px",
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: "6px",
+  },
+
+  infoText: {
     fontSize: "14px",
-    fontWeight: 800,
+    color: "#4b5563",
+    lineHeight: 1.5,
   },
+
+  card: {
+    background: "#fff",
+    borderRadius: "22px",
+    padding: "16px",
+    border: "1px solid #e5e7eb",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.05)",
+    marginBottom: "16px",
+  },
+
+  cardHeader: {
+    marginBottom: "12px",
+  },
+
+  cardHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "12px",
+    marginBottom: "14px",
+  },
+
+  cardTitle: {
+    margin: 0,
+    fontSize: "20px",
+    color: "#111827",
+  },
+
+  cardSubtitle: {
+    margin: "4px 0 0",
+    color: "#6b7280",
+    fontSize: "14px",
+  },
+
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: "10px",
+  },
+
   input: {
     width: "100%",
-    boxSizing: "border-box",
+    height: "50px",
+    borderRadius: "14px",
     border: "1px solid #d1d5db",
-    borderRadius: "16px",
-    padding: "14px 16px",
-    fontSize: "16px",
+    padding: "0 14px",
+    fontSize: "15px",
     outline: "none",
+    boxSizing: "border-box",
+    background: "#fff",
   },
-  errorBox: {
-    background: "#fef2f2",
-    color: "#991b1b",
-    border: "1px solid #fecaca",
-    padding: "12px 14px",
+
+  greenButton: {
+    minWidth: "150px",
+    height: "46px",
+    border: "none",
     borderRadius: "14px",
-    marginBottom: "16px",
+    background: "#16a34a",
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: "14px",
+    cursor: "pointer",
+    padding: "0 14px",
   },
-  successBox: {
-    background: "#dcfce7",
+
+  quickButtons: {
+    display: "flex",
+    gap: "8px",
+    flexWrap: "wrap",
+    marginBottom: "14px",
+  },
+
+  quickButton: {
+    height: "40px",
+    border: "1px solid #bbf7d0",
+    background: "#f0fdf4",
     color: "#166534",
-    border: "1px solid #86efac",
-    padding: "12px 14px",
+    borderRadius: "999px",
+    padding: "0 14px",
+    fontWeight: "700",
+    cursor: "pointer",
+  },
+
+  quickButtonDanger: {
+    height: "40px",
+    border: "1px solid #fecaca",
+    background: "#fef2f2",
+    color: "#b91c1c",
+    borderRadius: "999px",
+    padding: "0 14px",
+    fontWeight: "700",
+    cursor: "pointer",
+  },
+
+  gridNumeros: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, 1fr)",
+    gap: "8px",
+  },
+
+  numeroButton: {
+    height: "48px",
     borderRadius: "14px",
-    marginBottom: "16px",
+    border: "1px solid #d1d5db",
+    background: "#fff",
+    color: "#111827",
+    fontWeight: "700",
+    fontSize: "14px",
+    cursor: "pointer",
   },
-  bottomSpace: {
-    height: "120px",
+
+  numeroAtivo: {
+    background: "#16a34a",
+    color: "#fff",
+    border: "1px solid #16a34a",
   },
+
+  numeroReservado: {
+    background: "#facc15",
+    color: "#111827",
+    border: "1px solid #facc15",
+    cursor: "not-allowed",
+  },
+
+  numeroPago: {
+    background: "#111827",
+    color: "#fff",
+    border: "1px solid #111827",
+    cursor: "not-allowed",
+  },
+
+  legendRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "14px",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: "20px",
+    color: "#4b5563",
+    fontSize: "14px",
+  },
+
+  legendItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+
+  legendColor: {
+    width: "16px",
+    height: "16px",
+    borderRadius: "6px",
+    display: "inline-block",
+  },
+
   bottomBar: {
     position: "fixed",
     left: 0,
     right: 0,
     bottom: 0,
-    background: "rgba(255,255,255,0.98)",
+    background: "rgba(255,255,255,0.97)",
+    backdropFilter: "blur(12px)",
     borderTop: "1px solid #e5e7eb",
-    boxShadow: "0 -10px 30px rgba(15,23,42,0.08)",
-    zIndex: 1000,
-  },
-  bottomBarContent: {
-    maxWidth: "980px",
-    margin: "0 auto",
-    padding: "12px 14px",
-    display: "grid",
-    gridTemplateColumns: "1.5fr 0.8fr 1fr",
+    padding: "12px",
+    display: "flex",
     gap: "12px",
     alignItems: "center",
+    justifyContent: "center",
+    zIndex: 999,
   },
-  bottomLabel: {
-    color: "#64748b",
-    fontSize: "12px",
-    marginBottom: "4px",
-    fontWeight: 700,
+
+  bottomSummary: {
+    minWidth: "120px",
   },
-  bottomSelected: {
-    fontWeight: 800,
+
+  bottomCount: {
     fontSize: "14px",
-    color: "#0f172a",
-    wordBreak: "break-word",
+    color: "#6b7280",
   },
-  bottomPriceBox: {
-    textAlign: "center",
+
+  bottomValue: {
+    fontSize: "22px",
+    fontWeight: "800",
+    color: "#111827",
   },
-  bottomPrice: {
-    fontSize: "28px",
-    fontWeight: 900,
-    color: "#16a34a",
-  },
-  bottomButtons: {
-    display: "flex",
-    gap: "8px",
-    justifyContent: "flex-end",
-    flexWrap: "wrap",
-  },
-  secondaryButton: {
-    background: "#fff",
-    color: "#16a34a",
-    border: "1px solid #16a34a",
-    borderRadius: "14px",
-    padding: "12px 14px",
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  primaryButton: {
+
+  bottomButton: {
+    height: "54px",
+    minWidth: "190px",
+    border: "none",
+    borderRadius: "16px",
     background: "#16a34a",
     color: "#fff",
-    border: "none",
-    borderRadius: "14px",
-    padding: "12px 18px",
-    fontWeight: 700,
+    fontSize: "16px",
+    fontWeight: "800",
     cursor: "pointer",
+    padding: "0 18px",
+    boxShadow: "0 10px 24px rgba(22,163,74,0.28)",
   },
 };
