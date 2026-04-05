@@ -127,7 +127,7 @@ function enrichRaffle(raffle) {
   return {
     ...raffle,
     ...metrics,
-    publicLink: `${raffle.baseUrl || "http://localhost:5173"}/sorteio/${raffle.slug || raffle.id}`,
+    publicLink: `${raffle.baseUrl || "http://localhost:5173"}/#/sorteio/${raffle.slug || raffle.id}`,
   };
 }
 
