@@ -6,9 +6,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<SorteioPage />} />
+      <Route path="/sorteio/:slug" element={<SorteioPage />} />
       <Route path="/admin" element={<AdminPage />} />
-
-      {/* opcional: se alguém entrar em rota inexistente, volta para a pública */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
