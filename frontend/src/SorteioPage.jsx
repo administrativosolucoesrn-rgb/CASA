@@ -44,7 +44,7 @@ function safeArray(value) {
 export default function SorteioPage() {
   const { slug } = useParams();
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState("");
   const [sorteio, setSorteio] = useState(null);
 
@@ -309,33 +309,29 @@ export default function SorteioPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div style={styles.centerWrap}>
-        <div style={styles.loadingCard}>
-          <div style={styles.loadingDot} />
-          <div style={styles.loadingText}>Carregando...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!sorteio) {
-    return (
-      <div style={styles.centerWrap}>
-        <div style={styles.loadingCard}>
-          <div style={styles.loadingText}>Não foi possível abrir este sorteio.</div>
-          <div style={{ marginTop: 8, color: "#667085" }}>{erro}</div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div style={styles.page}>
       <style>{`
         * { box-sizing: border-box; }
         body { margin: 0; background: #eef2ef; }
+
+        @keyframes floatArrows {
+          0% { transform: translateY(0px); opacity: 0.9; }
+          50% { transform: translateY(6px); opacity: 1; }
+          100% { transform: translateY(0px); opacity: 0.9; }
+        }
+
+        @keyframes pulseGlow {
+          0% { box-shadow: 0 10px 24px rgba(16,185,129,0.18); transform: translateY(0); }
+          50% { box-shadow: 0 16px 28px rgba(16,185,129,0.28); transform: translateY(-1px); }
+          100% { box-shadow: 0 10px 24px rgba(16,185,129,0.18); transform: translateY(0); }
+        }
+
+        @keyframes quickPulse {
+          0% { transform: scale(1); }
+          50% { transform: scale(1.01); }
+          100% { transform: scale(1); }
+        }
       `}</style>
 
       {myNumbersOpen && (
@@ -546,7 +542,21 @@ export default function SorteioPage() {
       </div>
 
       <div style={styles.container}>
+        {erro && !sorteio ? (
+          <div style={styles.card}>
+            <div style={styles.description}>{erro}</div>
+          </div>
+        ) : null}
+
         <div style={styles.heroCard}>
+          <div style={styles.heroLogoWrap}>
+            {sorteio?.logoUrl ? (
+              <img src={sorteio.logoUrl} alt="Logo" style={styles.heroLogoImg} />
+            ) : (
+              <div style={styles.heroLogoFallback}>CASA PREMIADA</div>
+            )}
+          </div>
+
           <img src={heroImage} alt={title} style={styles.heroImage} />
 
           <div style={styles.blackInfoBar}>
@@ -574,9 +584,21 @@ export default function SorteioPage() {
           </div>
         ) : null}
 
-        <div ref={numbersRef} style={styles.sectionHeadline}>
-          <span style={styles.headlineBadge}>✨</span>
-          Escolher números
+        <div
+          ref={numbersRef}
+          style={styles.sectionHeadlineAnimated}
+          onClick={scrollToNumbers}
+        >
+          <div style={styles.chooseHeadlineTop}>
+            <span style={styles.headlineBadge}>✨</span>
+            <span>Escolher números</span>
+          </div>
+
+          <div style={styles.chooseArrowWrap}>
+            <span style={styles.chooseArrow}>↓</span>
+            <span style={{ ...styles.chooseArrow, animationDelay: "0.15s" }}>↓</span>
+            <span style={{ ...styles.chooseArrow, animationDelay: "0.3s" }}>↓</span>
+          </div>
         </div>
 
         <div style={styles.legendHint}>Toque no número que deseja comprar 👇</div>
@@ -683,7 +705,8 @@ export default function SorteioPage() {
       ) : (
         <div style={styles.floatingWrap}>
           <button style={styles.floatingBtn} onClick={scrollToNumbers}>
-            ✨ Escolher números
+            <span>✨ Escolher números</span>
+            <span style={styles.floatingArrows}>↓ ↓ ↓</span>
           </button>
         </div>
       )}
@@ -697,33 +720,6 @@ const styles = {
     background: "#eef2ef",
     paddingBottom: 150,
     fontFamily: "Arial, sans-serif",
-  },
-  centerWrap: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    background: "#eef2ef",
-  },
-  loadingCard: {
-    background: "#fff",
-    borderRadius: 24,
-    padding: 24,
-    textAlign: "center",
-    boxShadow: "0 10px 24px rgba(0,0,0,0.08)",
-  },
-  loadingDot: {
-    width: 42,
-    height: 42,
-    borderRadius: 99,
-    background: "#10b981",
-    margin: "0 auto 12px",
-  },
-  loadingText: {
-    fontSize: 18,
-    color: "#1f2937",
-    fontWeight: 500,
   },
   topBar: {
     position: "sticky",
@@ -780,6 +776,28 @@ const styles = {
     background: "#fff",
     boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
     marginBottom: 16,
+    position: "relative",
+  },
+  heroLogoWrap: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    zIndex: 3,
+    background: "rgba(255,255,255,0.92)",
+    borderRadius: 16,
+    padding: "8px 10px",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.10)",
+    backdropFilter: "blur(8px)",
+  },
+  heroLogoImg: {
+    height: 42,
+    objectFit: "contain",
+    display: "block",
+  },
+  heroLogoFallback: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: 600,
   },
   heroImage: {
     width: "100%",
@@ -840,15 +858,22 @@ const styles = {
     color: "#344054",
     fontWeight: 400,
   },
-  sectionHeadline: {
+  sectionHeadlineAnimated: {
     margin: "24px 0 12px",
-    fontSize: 22,
-    fontWeight: 600,
-    lineHeight: 1.15,
-    color: "#111827",
+    borderRadius: 22,
+    padding: "16px 18px 14px",
+    background: "linear-gradient(135deg, #1db874, #149954)",
+    color: "#fff",
+    cursor: "pointer",
+    animation: "pulseGlow 1.8s infinite",
+  },
+  chooseHeadlineTop: {
     display: "flex",
     alignItems: "center",
     gap: 10,
+    fontSize: 22,
+    fontWeight: 600,
+    lineHeight: 1.15,
   },
   headlineBadge: {
     width: 34,
@@ -857,9 +882,20 @@ const styles = {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "#fff6d8",
-    border: "1px solid #f4d36f",
+    background: "rgba(255,255,255,0.16)",
+    border: "1px solid rgba(255,255,255,0.28)",
     fontSize: 18,
+  },
+  chooseArrowWrap: {
+    display: "flex",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  chooseArrow: {
+    fontSize: 18,
+    fontWeight: 700,
+    animation: "floatArrows 1.1s infinite",
   },
   legendHint: {
     color: "#667085",
@@ -893,6 +929,7 @@ const styles = {
     padding: 14,
     marginBottom: 16,
     boxShadow: "0 8px 18px rgba(244,211,111,0.18)",
+    animation: "quickPulse 2s infinite",
   },
   quickTopLine: {
     display: "flex",
@@ -1078,6 +1115,16 @@ const styles = {
     fontSize: 18,
     fontWeight: 600,
     boxShadow: "0 14px 24px rgba(16,185,129,0.28)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0 18px",
+    animation: "pulseGlow 1.8s infinite",
+  },
+  floatingArrows: {
+    animation: "floatArrows 1.1s infinite",
+    letterSpacing: 2,
+    fontSize: 16,
   },
   cartBar: {
     position: "fixed",
