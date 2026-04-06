@@ -1055,509 +1055,120 @@ app.post("/api/reservas", async (req, res) => {
  */
 app.post("/api/pix", async (req, res) => {
   try {
-    let db = await readDb();
-    db = migrateDb(db);
+    const db = await readDb();
 
-    const slug = String(req.body.slug || "").trim();
-    const nome = normalizeName(req.body.nome || "");
-    const whatsapp = normalizePhone(req.body.whatsapp || "");
-    const numeros = sanitizeReservedNumbers(req.body.numeros);
+    const { nome, whatsapp, numeros, sorteioId } = req.body;
 
-    if (!slug) {
-      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
+    if (!nome || !whatsapp || !numeros?.length) {
+      return res.status(400).json({ error: "Dados inválidos" });
     }
 
-    if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (whatsapp.length < 10) {
-      return res.status(400).json({ error: "WhatsApp inválido." });
-    }
-
-    if (!numeros.length) {
-      return res.status(400).json({ error: "Escolha ao menos um número." });
-    }
-
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
-
+    const sorteio = db.sorteios.find(s => s.id === sorteioId);
     if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    if (sorteio.status && sorteio.status !== "ativo") {
-      return res.status(400).json({ error: "Este sorteio não está disponível." });
-    }
-
-    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
-    if (invalidMessage) {
-      return res.status(400).json({ error: invalidMessage });
+      return res.status(404).json({ error: "Sorteio não encontrado" });
     }
 
     cleanupExpiredReservations(db);
 
-    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
-    const conflicts = numeros.filter((n) => unavailable.includes(n));
+    const indisponiveis = getUnavailableNumbersForSorteio(sorteioId, db);
+    const conflito = numeros.find(n => indisponiveis.includes(n));
 
-    if (conflicts.length) {
-      return res.status(409).json({
-        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
-        conflicts,
-      });
+    if (conflito) {
+      return res.status(409).json({ error: "Número já vendido" });
     }
 
     const cliente = upsertCliente(db, { nome, whatsapp });
 
-    const reserva = createReservaRecord({
-      db,
-      sorteio,
-      cliente,
-      nome,
-      whatsapp,
-      numeros,
-      status: "reservado",
-      origem: "site",
-      bloco: false,
-      observacao: "",
-      expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
-    });
-
-    const pixCode = buildPixPayload({
-      pixKey: PIX_KEY,
-      description: `${PIX_DESCRIPTION} ${sorteio.title}`.slice(0, 99),
-      merchantName: PIX_MERCHANT_NAME,
-      merchantCity: PIX_MERCHANT_CITY,
-      txid: reserva.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 25) || "***",
-      amount: reserva.total,
-    });
-
-    const qrCodeBase64 = await QRCode.toDataURL(pixCode);
-
-    const pagamento = {
-      id: generateId("pag"),
-      reservaId: reserva.id,
-      sorteioId: sorteio.id,
+    const reserva = {
+      id: generateId("res"),
+      sorteioId,
       clienteId: cliente.id,
       nome,
       whatsapp,
       numeros,
-      valor: reserva.total,
-      forma: "pix",
-      pixCopiaECola: pixCode,
-      qrCodeBase64,
-      status: "pendente",
+      total: numeros.length * sorteio.price,
+      status: "reservado",
       createdAt: nowIso(),
-      updatedAt: nowIso(),
-      expiresAt: reserva.expiresAt,
+      expiresAt: addMinutes(new Date(), 60).toISOString()
     };
 
-    db.pagamentos.push(pagamento);
-    await writeDb(db);
+    db.reservas.push(reserva);
 
-    res.status(201).json({
-      success: true,
-      reservaId: reserva.id,
-      pagamentoId: pagamento.id,
-      status: pagamento.status,
-      pixCopiaECola: pagamento.pixCopiaECola,
-      pixCode: pagamento.pixCopiaECola,
-      copiaecola: pagamento.pixCopiaECola,
-      qrCodeBase64: pagamento.qrCodeBase64,
-      expirationDate: pagamento.expiresAt,
-      total: pagamento.valor,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao gerar Pix." });
-  }
-});
+    const amount = Math.round(reserva.total * 100);
 
-/**
- * =========================================================
- * CONFIRMAÇÃO MANUAL DE PAGAMENTO
- * =========================================================
- */
-app.post("/api/pagamentos/:id/confirmar", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
+    const area = whatsapp.substring(0,2);
+    const numero = whatsapp.substring(2);
 
-    const { id } = req.params;
-
-    const pagamento = db.pagamentos.find((p) => p.id === id);
-    if (!pagamento) {
-      return res.status(404).json({ error: "Pagamento não encontrado." });
-    }
-
-    pagamento.status = "pago";
-    pagamento.updatedAt = nowIso();
-
-    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
-    if (reserva) {
-      reserva.status = "pago";
-      reserva.updatedAt = nowIso();
-
-      if (!reserva.bloco && !["site", "manual"].includes(String(reserva.origem || "").toLowerCase())) {
-        splitBlockIfNeeded(db, { id: reserva.sorteioId, price: reserva.valorNumero || 0 }, reserva.origem, reserva.numeros || []);
-      }
-    }
-
-    await writeDb(db);
-
-    res.json({
-      success: true,
-      pagamento,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao confirmar pagamento." });
-  }
-});
-
-/**
- * =========================================================
- * ADMIN / RESUMO
- * =========================================================
- */
-app.get("/api/admin/sorteios/:id/resumo", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    cleanupExpiredReservations(db);
-    await writeDb(db);
-
-    const reservas = db.reservas.filter((r) => r.sorteioId === sorteio.id);
-    const pagamentos = db.pagamentos.filter((p) => p.sorteioId === sorteio.id);
-
-    const pagos = pagamentos.filter((p) => p.status === "pago");
-    const pendentes = pagamentos.filter((p) => p.status === "pendente");
-    const reservadosAtivos = reservas.filter(
-      (r) => r.status === "reservado" && !isExpired(r.expiresAt)
-    );
-
-    const numerosPagos = [...new Set(pagos.flatMap((p) => p.numeros))];
-    const numerosReservados = [...new Set(reservadosAtivos.flatMap((r) => r.numeros))];
-
-    const arrecadado = pagos.reduce((acc, p) => acc + Number(p.valor || 0), 0);
-
-    res.json({
-      sorteio: getSorteioDisplay(sorteio, db),
-      metricas: {
-        totalNumeros: sorteio.totalNumbers,
-        vendidos: numerosPagos.length,
-        reservados: numerosReservados.length,
-        disponiveis:
-          Number(sorteio.totalNumbers) -
-          [...new Set([...numerosPagos, ...numerosReservados])].length,
-        arrecadado: Number(arrecadado.toFixed(2)),
-        pagamentosPendentes: pendentes.length,
-        pagamentosPagos: pagos.length,
+    const response = await fetch(`${PAGARME_API_URL}/orders`, {
+      method: "POST",
+      headers: {
+        Authorization: pagarmeBasicAuth(),
+        "Content-Type": "application/json"
       },
-      participantes: [...reservas]
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .map((r) => ({
-          id: r.id,
-          nome: r.nome,
-          whatsapp: r.whatsapp,
-          numeros: r.numeros,
-          numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
-          total: r.total,
-          status: r.status,
-          origem: r.origem || "site",
-          bloco: Boolean(r.bloco),
-          observacao: r.observacao || "",
-          createdAt: r.createdAt,
-          expiresAt: r.expiresAt,
-        })),
+      body: JSON.stringify({
+        items: [{
+          amount,
+          description: `Compra de números`,
+          quantity: 1,
+          code: reserva.id
+        }],
+        customer: {
+          name: nome,
+          type: "individual",
+          phones: {
+            mobile_phone: {
+              country_code: "55",
+              area_code: area,
+              number: numero
+            }
+          }
+        },
+        payments: [{
+          payment_method: "pix",
+          pix: { expires_in: 3600 }
+        }],
+        metadata: {
+          reservaId: reserva.id
+        }
+      })
     });
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar resumo do sorteio." });
-  }
-});
 
-/**
- * =========================================================
- * LISTAGEM DE PAGAMENTOS
- * =========================================================
- */
-app.get("/api/pagamentos", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
+    const data = await response.json();
 
-    const sorteioId = String(req.query.sorteioId || "").trim();
-
-    let pagamentos = db.pagamentos;
-
-    if (sorteioId) {
-      const sorteio = db.sorteios.find((s) => s.id === sorteioId || s.slug === sorteioId);
-      if (!sorteio) {
-        return res.status(404).json({ error: "Sorteio não encontrado." });
-      }
-      pagamentos = pagamentos.filter((p) => p.sorteioId === sorteio.id);
+    if (!response.ok) {
+      return res.status(500).json({ error: "Erro Pagar.me", data });
     }
 
-    pagamentos = pagamentos.sort(
-      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-    );
+    const charge = data.charges[0];
+    const pix = charge.last_transaction;
 
-    res.json(pagamentos);
-  } catch {
-    res.status(500).json({ error: "Erro ao listar pagamentos." });
-  }
-});
-
-/**
- * =========================================================
- * EXPORTAÇÃO / LISTA PARTICIPANTES
- * =========================================================
- */
-app.get("/api/admin/sorteios/:id/participantes", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    cleanupExpiredReservations(db);
-    await writeDb(db);
-
-    const reservas = db.reservas
-      .filter((r) => r.sorteioId === sorteio.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    res.json(
-      reservas.map((r) => ({
-        id: r.id,
-        nome: r.nome,
-        whatsapp: r.whatsapp,
-        numeros: r.numeros,
-        numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
-        total: r.total,
-        status: r.status,
-        origem: r.origem || "site",
-        bloco: Boolean(r.bloco),
-        observacao: r.observacao || "",
-        createdAt: r.createdAt,
-        expiresAt: r.expiresAt,
-      }))
-    );
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar participantes." });
-  }
-});
-
-/**
- * =========================================================
- * ADMIN / PARTICIPANTE MANUAL COM BLOCOS
- * =========================================================
- */
-app.post("/api/admin/sorteios/:id/participantes/manual", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const nome = normalizeName(req.body.nome || "");
-    const whatsapp = normalizePhone(req.body.whatsapp || req.body.telefone || "");
-    const origem = String(req.body.origem || "manual").trim().toLowerCase() || "manual";
-    const bloco = Boolean(req.body.bloco);
-    const observacao = String(req.body.observacao || "").trim();
-    const status = String(req.body.status || "reservado").trim().toLowerCase() === "pago"
-      ? "pago"
-      : "reservado";
-
-    let numeros = [];
-    if (Array.isArray(req.body.numeros)) {
-      numeros = sanitizeReservedNumbers(req.body.numeros);
-    } else {
-      numeros = parseNumbersAdvanced(req.body.numeros || "");
-    }
-
-    if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (whatsapp.length < 8) {
-      return res.status(400).json({ error: "Telefone é obrigatório." });
-    }
-
-    if (!numeros.length) {
-      return res.status(400).json({ error: "Informe os números." });
-    }
-
-    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
-    if (invalidMessage) {
-      return res.status(400).json({ error: invalidMessage });
-    }
-
-    cleanupExpiredReservations(db);
-
-    if (!bloco && !["site", "manual"].includes(origem)) {
-      splitBlockIfNeeded(db, sorteio, origem, numeros);
-    }
-
-    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
-    const conflicts = numeros.filter((n) => unavailable.includes(n));
-
-    if (conflicts.length) {
-      return res.status(409).json({
-        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
-        conflicts,
-      });
-    }
-
-    const cliente = upsertCliente(db, { nome, whatsapp });
-
-    const expiresAt =
-      status === "reservado"
-        ? bloco
-          ? addMinutes(new Date(), 60 * 24 * 365).toISOString()
-          : addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString()
-        : null;
-
-    const reserva = createReservaRecord({
-      db,
-      sorteio,
-      cliente,
+    const pagamento = {
+      id: generateId("pag"),
+      reservaId: reserva.id,
+      sorteioId,
       nome,
       whatsapp,
       numeros,
-      status,
-      origem,
-      bloco,
-      observacao,
-      expiresAt,
-    });
+      valor: reserva.total,
+      status: "pendente",
+      providerOrderId: data.id,
+      providerChargeId: charge.id,
+      pix: pix.qr_code,
+      createdAt: nowIso()
+    };
 
-    if (status === "pago") {
-      db.pagamentos.push({
-        id: generateId("pag"),
-        reservaId: reserva.id,
-        sorteioId: sorteio.id,
-        clienteId: cliente.id,
-        nome,
-        whatsapp,
-        numeros,
-        valor: reserva.total,
-        forma: "manual",
-        pixCopiaECola: "",
-        qrCodeBase64: "",
-        status: "pago",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-        expiresAt: null,
-      });
-    }
+    db.pagamentos.push(pagamento);
 
     await writeDb(db);
-
-    res.status(201).json({
-      success: true,
-      reserva,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao cadastrar participante manual." });
-  }
-});
-
-app.delete("/api/admin/participantes/:id", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-    const reserva = db.reservas.find((r) => r.id === id);
-
-    if (!reserva) {
-      return res.status(404).json({ error: "Participante não encontrado." });
-    }
-
-    db.reservas = db.reservas.filter((r) => r.id !== id);
-    db.pagamentos = db.pagamentos.filter((p) => p.reservaId !== id);
-
-    await writeDb(db);
-
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ error: "Erro ao excluir participante." });
-  }
-});
-
-/**
- * =========================================================
- * MEUS NÚMEROS
- * =========================================================
- */
-app.get("/api/meus-numeros/:slug", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { slug } = req.params;
-    const whatsapp = normalizePhone(req.query.whatsapp || "");
-
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
-
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    if (whatsapp.length < 8) {
-      return res.status(400).json({ error: "Digite seu telefone." });
-    }
-
-    const items = db.reservas.filter(
-      (r) =>
-        r.sorteioId === sorteio.id &&
-        normalizePhone(r.whatsapp) === whatsapp &&
-        r.status !== "expirado"
-    );
-
-    const numeros = [...new Set(items.flatMap((i) => i.numeros || []).map(Number))].sort(
-      (a, b) => a - b
-    );
 
     res.json({
-      nome: items[0]?.nome || "",
-      numeros,
+      copiaecola: pix.qr_code,
+      qrCodeBase64: pix.qr_code_url,
+      pagamentoId: pagamento.id
     });
-  } catch {
-    res.status(500).json({ error: "Erro ao consultar." });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao gerar PIX" });
   }
-});
-
-/**
- * =========================================================
- * FALLBACK
- * =========================================================
- */
-app.use((req, res) => {
-  res.status(404).json({ error: "Rota não encontrada." });
-});
-
-/**
- * =========================================================
- * START
- * =========================================================
- */
-app.listen(PORT, () => {
-  console.log(`Servidor rodando em: http://localhost:${PORT}`);
 });
