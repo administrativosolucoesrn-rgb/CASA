@@ -14,6 +14,8 @@ const emptySorteioForm = {
   status: "ativo",
   imagemFile: null,
   imagemPreview: "",
+  logoFile: null,
+  logoPreview: "",
 };
 
 const emptyParticipantForm = {
@@ -21,6 +23,9 @@ const emptyParticipantForm = {
   telefone: "",
   numeros: "",
   status: "reservado",
+  origem: "site",
+  bloco: false,
+  observacao: "",
 };
 
 function onlyDigits(value = "") {
@@ -62,14 +67,66 @@ function formatDateInput(dateString) {
 }
 
 function parseNumbersInput(input = "") {
-  return [
-    ...new Set(
-      String(input)
-        .split(/[\s,;]+/)
-        .map((item) => Number(item.trim()))
-        .filter((n) => Number.isInteger(n) && n > 0)
-    ),
-  ].sort((a, b) => a - b);
+  const source = String(input || "").trim();
+  if (!source) return [];
+
+  const result = new Set();
+
+  source
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      if (part.includes("-")) {
+        const [start, end] = part.split("-").map((n) => Number(String(n).trim()));
+        if (
+          Number.isInteger(start) &&
+          Number.isInteger(end) &&
+          start > 0 &&
+          end >= start
+        ) {
+          for (let i = start; i <= end; i += 1) {
+            result.add(i);
+          }
+        }
+      } else {
+        const n = Number(part);
+        if (Number.isInteger(n) && n > 0) {
+          result.add(n);
+        }
+      }
+    });
+
+  return [...result].sort((a, b) => a - b);
+}
+
+function formatNumbersCompact(numbers = []) {
+  const arr = [...new Set((numbers || []).map(Number).filter((n) => n > 0))].sort(
+    (a, b) => a - b
+  );
+
+  if (!arr.length) return "";
+
+  const ranges = [];
+  let start = arr[0];
+  let prev = arr[0];
+
+  for (let i = 1; i < arr.length; i += 1) {
+    const current = arr[i];
+
+    if (current === prev + 1) {
+      prev = current;
+      continue;
+    }
+
+    ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = current;
+    prev = current;
+  }
+
+  ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+
+  return ranges.join(", ");
 }
 
 function downloadCSV(filename, rows) {
@@ -194,7 +251,13 @@ export default function AdminPage() {
         nome: item.nome || "",
         telefone: item.whatsapp ? formatPhone(item.whatsapp) : "",
         numeros: Array.isArray(item.numeros) ? item.numeros : [],
+        numerosTexto:
+          item.numerosTexto ||
+          formatNumbersCompact(Array.isArray(item.numeros) ? item.numeros : []),
         status: item.status || "",
+        origem: item.origem || "site",
+        bloco: Boolean(item.bloco),
+        observacao: item.observacao || "",
         valorPago: item.total || 0,
         createdAt: item.createdAt || null,
       }));
@@ -223,7 +286,7 @@ export default function AdminPage() {
       }
 
       setResumo(data);
-    } catch (err) {
+    } catch {
       setResumo(null);
     } finally {
       setLoadingResumo(false);
@@ -253,6 +316,28 @@ export default function AdminPage() {
     };
   }, [resumo]);
 
+  const groupedParticipants = useMemo(() => {
+    const groups = {
+      mae: [],
+      pai: [],
+      vo: [],
+      site: [],
+      manual: [],
+      outros: [],
+    };
+
+    participants.forEach((p) => {
+      const key = String(p.origem || "").toLowerCase();
+      if (groups[key]) {
+        groups[key].push(p);
+      } else {
+        groups.outros.push(p);
+      }
+    });
+
+    return groups;
+  }, [participants]);
+
   function handleImageFileChange(event) {
     const file = event.target.files?.[0] || null;
     if (!file) return;
@@ -266,6 +351,22 @@ export default function AdminPage() {
     }));
 
     setMessage("Imagem selecionada com sucesso.");
+    setError("");
+  }
+
+  function handleLogoFileChange(event) {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+
+    const preview = URL.createObjectURL(file);
+
+    setSorteioForm((prev) => ({
+      ...prev,
+      logoFile: file,
+      logoPreview: preview,
+    }));
+
+    setMessage("Logo selecionada com sucesso.");
     setError("");
   }
 
@@ -289,6 +390,14 @@ export default function AdminPage() {
       setParticipantForm((prev) => ({
         ...prev,
         telefone: formatPhone(value),
+      }));
+      return;
+    }
+
+    if (field === "bloco") {
+      setParticipantForm((prev) => ({
+        ...prev,
+        bloco: Boolean(value),
       }));
       return;
     }
@@ -318,6 +427,10 @@ export default function AdminPage() {
 
       if (sorteioForm.imagemFile) {
         formData.append("image", sorteioForm.imagemFile);
+      }
+
+      if (sorteioForm.logoFile) {
+        formData.append("logo", sorteioForm.logoFile);
       }
 
       const isEdit = Boolean(sorteioForm.id);
@@ -371,6 +484,8 @@ export default function AdminPage() {
       status: sorteio.status || "ativo",
       imagemFile: null,
       imagemPreview: sorteio.image || "",
+      logoFile: null,
+      logoPreview: sorteio.logoUrl || "",
     });
 
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -425,7 +540,6 @@ export default function AdminPage() {
       const numeros = parseNumbersInput(participantForm.numeros);
       const nome = participantForm.nome.trim();
       const whatsapp = onlyDigits(participantForm.telefone);
-      const slug = selectedSorteio.slug || selectedSorteio.id;
 
       if (!nome) {
         throw new Error("Nome é obrigatório.");
@@ -439,51 +553,43 @@ export default function AdminPage() {
         throw new Error("Informe os números.");
       }
 
-      if (participantForm.status === "reservado") {
-        const res = await fetch(`${API_BASE}/api/reservas`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            slug,
-            nome,
-            whatsapp,
-            numeros,
-          }),
-        });
-
-        const data = await safeJson(res);
-
-        if (!res.ok) {
-          throw new Error(data?.error || "Erro ao reservar.");
-        }
+      const totalNumbers = Number(selectedSorteio.totalNumbers || 0);
+      const invalid = numeros.filter((n) => n < 1 || n > totalNumbers);
+      if (invalid.length) {
+        throw new Error(`Números fora do intervalo do sorteio: ${invalid.join(", ")}`);
       }
 
-      if (participantForm.status === "pago") {
-        const res = await fetch(`${API_BASE}/api/pix`, {
+      const payload = {
+        nome,
+        whatsapp,
+        numeros,
+        status: participantForm.status,
+        origem: participantForm.origem,
+        bloco: participantForm.bloco,
+        observacao: participantForm.observacao.trim(),
+      };
+
+      const res = await fetch(
+        `${API_BASE}/api/admin/sorteios/${selectedSorteio.id}/participantes/manual`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            slug,
-            nome,
-            whatsapp,
-            numeros,
-          }),
-        });
-
-        const data = await safeJson(res);
-
-        if (!res.ok) {
-          throw new Error(data?.error || "Erro no PIX.");
+          body: JSON.stringify(payload),
         }
+      );
 
-        if (data?.pagamentoId) {
-          await fetch(`${API_BASE}/api/pagamentos/${data.pagamentoId}/confirmar`, {
-            method: "POST",
-          });
-        }
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao cadastrar participante.");
       }
 
-      setMessage("Participante cadastrado com sucesso.");
+      setMessage(
+        participantForm.bloco
+          ? "Bloco cadastrado com sucesso."
+          : "Participante cadastrado com sucesso."
+      );
+
       resetParticipantForm();
       await loadParticipants(selectedSorteio.id);
       await loadResumo(selectedSorteio.id);
@@ -491,6 +597,103 @@ export default function AdminPage() {
       setError(err.message || "Erro ao cadastrar participante.");
     } finally {
       setSavingParticipant(false);
+    }
+  }
+
+  async function handleDeleteParticipant(id) {
+    const confirmed = window.confirm("Deseja excluir este participante?");
+    if (!confirmed) return;
+
+    try {
+      setError("");
+      setMessage("");
+
+      const res = await fetch(`${API_BASE}/api/admin/participantes/${id}`, {
+        method: "DELETE",
+      });
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao excluir participante.");
+      }
+
+      setMessage("Participante excluído com sucesso.");
+      if (selectedSorteioId) {
+        await loadParticipants(selectedSorteioId);
+        await loadResumo(selectedSorteioId);
+      }
+    } catch (err) {
+      setError(err.message || "Erro ao excluir participante.");
+    }
+  }
+
+  async function handleQuickCreateBlocks() {
+    if (!selectedSorteio) {
+      setError("Selecione um sorteio primeiro.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Criar blocos padrão?\n\nMãe: 1-150\nPai: 151-300\nVó: 301-400"
+    );
+    if (!confirmed) return;
+
+    const blocks = [
+      {
+        nome: "Vendas externas mãe",
+        whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
+        numeros: "1-150",
+        status: "reservado",
+        origem: "mae",
+        bloco: true,
+        observacao: "Bloco externo da mãe",
+      },
+      {
+        nome: "Vendas externas pai",
+        whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
+        numeros: "151-300",
+        status: "reservado",
+        origem: "pai",
+        bloco: true,
+        observacao: "Bloco externo do pai",
+      },
+      {
+        nome: "Vendas externas vó",
+        whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
+        numeros: "301-400",
+        status: "reservado",
+        origem: "vo",
+        bloco: true,
+        observacao: "Bloco externo da vó",
+      },
+    ];
+
+    try {
+      setError("");
+      setMessage("");
+
+      for (const block of blocks) {
+        const res = await fetch(
+          `${API_BASE}/api/admin/sorteios/${selectedSorteio.id}/participantes/manual`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(block),
+          }
+        );
+
+        const data = await safeJson(res);
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Erro ao criar bloco ${block.nome}.`);
+        }
+      }
+
+      setMessage("Blocos padrão criados com sucesso.");
+      await loadParticipants(selectedSorteio.id);
+      await loadResumo(selectedSorteio.id);
+    } catch (err) {
+      setError(err.message || "Erro ao criar blocos.");
     }
   }
 
@@ -542,12 +745,27 @@ export default function AdminPage() {
     if (!selectedSorteio) return;
 
     const rows = [
-      ["Nome", "Telefone", "Números Comprados", "Status", "Total", "Criado em"],
+      [
+        "Nome",
+        "Telefone",
+        "Números",
+        "Números compactos",
+        "Status",
+        "Origem",
+        "Bloco",
+        "Observação",
+        "Total",
+        "Criado em",
+      ],
       ...participants.map((p) => [
         p.nome || "",
         p.telefone || "",
         Array.isArray(p.numeros) ? p.numeros.join(", ") : "",
+        p.numerosTexto || "",
         p.status || "",
+        p.origem || "",
+        p.bloco ? "Sim" : "Não",
+        p.observacao || "",
         p.valorPago || "",
         p.createdAt ? formatDate(p.createdAt) : "",
       ]),
@@ -651,7 +869,7 @@ export default function AdminPage() {
                     style={styles.input}
                     value={sorteioForm.totalNumeros}
                     onChange={(e) => handleSorteioChange("totalNumeros", e.target.value)}
-                    placeholder="300"
+                    placeholder="500"
                     required
                   />
                 </div>
@@ -669,16 +887,30 @@ export default function AdminPage() {
                 </select>
               </div>
 
-              <div style={styles.uploadArea}>
-                <label style={styles.label}>Foto do prêmio</label>
-                <input type="file" accept="image/*" onChange={handleImageFileChange} />
-                {sorteioForm.imagemPreview ? (
-                  <img
-                    src={sorteioForm.imagemPreview}
-                    alt="Prêmio"
-                    style={styles.previewLarge}
-                  />
-                ) : null}
+              <div style={styles.twoCols}>
+                <div style={styles.uploadArea}>
+                  <label style={styles.label}>Foto do prêmio</label>
+                  <input type="file" accept="image/*" onChange={handleImageFileChange} />
+                  {sorteioForm.imagemPreview ? (
+                    <img
+                      src={sorteioForm.imagemPreview}
+                      alt="Prêmio"
+                      style={styles.previewLarge}
+                    />
+                  ) : null}
+                </div>
+
+                <div style={styles.uploadArea}>
+                  <label style={styles.label}>Logo pública</label>
+                  <input type="file" accept="image/*" onChange={handleLogoFileChange} />
+                  {sorteioForm.logoPreview ? (
+                    <img
+                      src={sorteioForm.logoPreview}
+                      alt="Logo"
+                      style={styles.previewLarge}
+                    />
+                  ) : null}
+                </div>
               </div>
 
               <div style={styles.actions}>
@@ -839,6 +1071,36 @@ export default function AdminPage() {
               />
             </section>
 
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <div>
+                  <h2 style={styles.cardTitle}>Blocos rápidos</h2>
+                  <p style={styles.subtitle2}>
+                    Crie automaticamente os blocos de mãe, pai e vó
+                  </p>
+                </div>
+
+                <button style={styles.greenButton} onClick={handleQuickCreateBlocks}>
+                  Criar blocos padrão
+                </button>
+              </div>
+
+              <div style={styles.blocksGrid}>
+                <div style={styles.blockInfo}>
+                  <div style={styles.blockTitle}>Mãe</div>
+                  <div style={styles.blockText}>1 até 150</div>
+                </div>
+                <div style={styles.blockInfo}>
+                  <div style={styles.blockTitle}>Pai</div>
+                  <div style={styles.blockText}>151 até 300</div>
+                </div>
+                <div style={styles.blockInfo}>
+                  <div style={styles.blockTitle}>Vó</div>
+                  <div style={styles.blockText}>301 até 400</div>
+                </div>
+              </div>
+            </section>
+
             <section style={styles.twoSectionGrid}>
               <div style={styles.card}>
                 <h2 style={styles.cardTitle}>Adicionar participante</h2>
@@ -872,21 +1134,64 @@ export default function AdminPage() {
                       style={styles.input}
                       value={participantForm.numeros}
                       onChange={(e) => handleParticipantChange("numeros", e.target.value)}
-                      placeholder="Ex: 1, 5, 10"
+                      placeholder="Ex: 305,308 ou 301-400"
                       required
                     />
+                    <small style={styles.helpSmall}>
+                      Aceita números separados por vírgula e também intervalo.
+                    </small>
+                  </div>
+
+                  <div style={styles.twoCols}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Status</label>
+                      <select
+                        style={styles.input}
+                        value={participantForm.status}
+                        onChange={(e) => handleParticipantChange("status", e.target.value)}
+                      >
+                        <option value="reservado">Reservado</option>
+                        <option value="pago">Pago</option>
+                      </select>
+                    </div>
+
+                    <div style={styles.field}>
+                      <label style={styles.label}>Origem</label>
+                      <select
+                        style={styles.input}
+                        value={participantForm.origem}
+                        onChange={(e) => handleParticipantChange("origem", e.target.value)}
+                      >
+                        <option value="site">Site</option>
+                        <option value="mae">Mãe</option>
+                        <option value="pai">Pai</option>
+                        <option value="vo">Vó</option>
+                        <option value="manual">Manual</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={styles.checkRow}>
+                    <label style={styles.checkLabel}>
+                      <input
+                        type="checkbox"
+                        checked={participantForm.bloco}
+                        onChange={(e) => handleParticipantChange("bloco", e.target.checked)}
+                      />
+                      <span>Cadastrar como bloco externo</span>
+                    </label>
                   </div>
 
                   <div style={styles.field}>
-                    <label style={styles.label}>Status</label>
-                    <select
+                    <label style={styles.label}>Observação</label>
+                    <input
                       style={styles.input}
-                      value={participantForm.status}
-                      onChange={(e) => handleParticipantChange("status", e.target.value)}
-                    >
-                      <option value="reservado">Reservado</option>
-                      <option value="pago">Pago</option>
-                    </select>
+                      value={participantForm.observacao}
+                      onChange={(e) =>
+                        handleParticipantChange("observacao", e.target.value)
+                      }
+                      placeholder="Ex: venda da mãe, cliente presencial, etc."
+                    />
                   </div>
 
                   <button
@@ -894,7 +1199,11 @@ export default function AdminPage() {
                     style={styles.greenButton}
                     disabled={savingParticipant}
                   >
-                    {savingParticipant ? "Salvando..." : "Cadastrar participante"}
+                    {savingParticipant
+                      ? "Salvando..."
+                      : participantForm.bloco
+                      ? "Cadastrar bloco"
+                      : "Cadastrar participante"}
                   </button>
                 </form>
               </div>
@@ -903,12 +1212,22 @@ export default function AdminPage() {
                 <div style={styles.sectionHeader}>
                   <div>
                     <h2 style={styles.cardTitle}>Participantes</h2>
-                    <p style={styles.subtitle2}>Lista de compradores</p>
+                    <p style={styles.subtitle2}>Lista completa de compradores e blocos</p>
                   </div>
 
                   <button style={styles.greenButton} onClick={handleExportParticipants}>
                     Baixar CSV
                   </button>
+                </div>
+
+                <div style={styles.originSummary}>
+                  <div style={styles.originBadge}>Mãe: {groupedParticipants.mae.length}</div>
+                  <div style={styles.originBadge}>Pai: {groupedParticipants.pai.length}</div>
+                  <div style={styles.originBadge}>Vó: {groupedParticipants.vo.length}</div>
+                  <div style={styles.originBadge}>Site: {groupedParticipants.site.length}</div>
+                  <div style={styles.originBadge}>
+                    Manual: {groupedParticipants.manual.length}
+                  </div>
                 </div>
 
                 {loadingParticipants ? (
@@ -924,15 +1243,34 @@ export default function AdminPage() {
                           <th style={styles.th}>Telefone</th>
                           <th style={styles.th}>Números</th>
                           <th style={styles.th}>Status</th>
+                          <th style={styles.th}>Origem</th>
+                          <th style={styles.th}>Bloco</th>
+                          <th style={styles.th}>Ações</th>
                         </tr>
                       </thead>
                       <tbody>
                         {participants.map((p) => (
                           <tr key={p.id}>
-                            <td style={styles.td}>{p.nome}</td>
+                            <td style={styles.td}>
+                              <div>{p.nome}</div>
+                              {p.observacao ? (
+                                <small style={styles.helpSmall}>{p.observacao}</small>
+                              ) : null}
+                            </td>
                             <td style={styles.td}>{p.telefone}</td>
-                            <td style={styles.td}>{p.numeros?.join(", ")}</td>
+                            <td style={styles.td}>{p.numerosTexto || p.numeros?.join(", ")}</td>
                             <td style={styles.td}>{p.status}</td>
+                            <td style={styles.td}>{p.origem}</td>
+                            <td style={styles.td}>{p.bloco ? "Sim" : "Não"}</td>
+                            <td style={styles.td}>
+                              <button
+                                type="button"
+                                style={styles.smallDangerButton}
+                                onClick={() => handleDeleteParticipant(p.id)}
+                              >
+                                Excluir
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -1201,13 +1539,63 @@ const styles = {
     flexWrap: "wrap",
     marginBottom: "16px",
   },
+  blocksGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: "12px",
+  },
+  blockInfo: {
+    border: "1px solid #dbe4f0",
+    borderRadius: "16px",
+    padding: "14px",
+    background: "#f8fafc",
+  },
+  blockTitle: {
+    fontWeight: 800,
+    fontSize: "16px",
+    marginBottom: "6px",
+  },
+  blockText: {
+    color: "#475467",
+    fontSize: "14px",
+  },
+  checkRow: {
+    display: "flex",
+    alignItems: "center",
+  },
+  checkLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    fontSize: "14px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  helpSmall: {
+    color: "#6b7280",
+    fontSize: "12px",
+  },
+  originSummary: {
+    display: "flex",
+    gap: "8px",
+    flexWrap: "wrap",
+    marginBottom: "14px",
+  },
+  originBadge: {
+    background: "#f3f4f6",
+    border: "1px solid #e5e7eb",
+    borderRadius: "999px",
+    padding: "8px 12px",
+    fontSize: "12px",
+    fontWeight: 700,
+  },
   tableWrapper: {
     overflowX: "auto",
   },
   table: {
     width: "100%",
     borderCollapse: "collapse",
-    minWidth: "760px",
+    minWidth: "920px",
   },
   th: {
     textAlign: "left",
@@ -1223,3 +1611,4 @@ const styles = {
     verticalAlign: "top",
   },
 };
+
