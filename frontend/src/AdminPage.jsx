@@ -338,6 +338,45 @@ export default function AdminPage() {
     return groups;
   }, [participants]);
 
+  const responsavelCards = useMemo(() => {
+    const defs = [
+      { key: "site", label: "Site", range: "1-150" },
+      { key: "mae", label: "Mãe", range: "151-300" },
+      { key: "pai", label: "Pai", range: "301-450" },
+      { key: "vo", label: "Vó", range: "451-550" },
+    ];
+
+    return defs.map((def) => {
+      const group = groupedParticipants[def.key] || [];
+      const bloco = group.find((item) => item.bloco);
+      const clientes = group.filter((item) => !item.bloco);
+
+      const numerosNoBloco = bloco?.numeros || [];
+      const disponiveisNoBloco = numerosNoBloco.length;
+
+      const vendidos = clientes.reduce(
+        (acc, item) => acc + (Array.isArray(item.numeros) ? item.numeros.length : 0),
+        0
+      );
+
+      const totalFaixa = (() => {
+        const [start, end] = def.range.split("-").map(Number);
+        return Number.isInteger(start) && Number.isInteger(end) ? end - start + 1 : 0;
+      })();
+
+      const restantes = def.key === "site" ? totalFaixa : disponiveisNoBloco;
+
+      return {
+        ...def,
+        totalFaixa,
+        vendidos,
+        restantes,
+        numerosTexto: bloco?.numerosTexto || def.range,
+        blocoExiste: Boolean(bloco),
+      };
+    });
+  }, [groupedParticipants]);
+
   function handleImageFileChange(event) {
     const file = event.target.files?.[0] || null;
     if (!file) return;
@@ -642,7 +681,7 @@ export default function AdminPage() {
       {
         nome: "Vendas externas mãe",
         whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
-        numeros: "150-300",
+        numeros: "151-300",
         status: "reservado",
         origem: "mae",
         bloco: true,
@@ -869,7 +908,7 @@ export default function AdminPage() {
                     style={styles.input}
                     value={sorteioForm.totalNumeros}
                     onChange={(e) => handleSorteioChange("totalNumeros", e.target.value)}
-                    placeholder="500"
+                    placeholder="550"
                     required
                   />
                 </div>
@@ -1048,6 +1087,49 @@ export default function AdminPage() {
             <section style={styles.card}>
               <div style={styles.sectionHeader}>
                 <div>
+                  <h2 style={styles.cardTitle}>Cartelas por responsável</h2>
+                  <p style={styles.subtitle2}>
+                    Veja quantos números cada um ainda tem disponíveis
+                  </p>
+                </div>
+              </div>
+
+              <div style={styles.cartelasGrid}>
+                {responsavelCards.map((item) => (
+                  <div key={item.key} style={styles.cartelaCard}>
+                    <div style={styles.cartelaTop}>
+                      <div style={styles.cartelaNome}>{item.label}</div>
+                      <div style={styles.cartelaRange}>{item.range}</div>
+                    </div>
+
+                    <div style={styles.cartelaNumbers}>
+                      <div style={styles.cartelaStat}>
+                        <span style={styles.cartelaLabel}>Disponíveis</span>
+                        <strong style={styles.cartelaValue}>{item.restantes}</strong>
+                      </div>
+
+                      <div style={styles.cartelaStat}>
+                        <span style={styles.cartelaLabel}>Vendidos</span>
+                        <strong style={styles.cartelaValue}>{item.vendidos}</strong>
+                      </div>
+
+                      <div style={styles.cartelaStat}>
+                        <span style={styles.cartelaLabel}>Faixa atual</span>
+                        <strong style={styles.cartelaValueSmall}>
+                          {item.blocoExiste || item.key === "site"
+                            ? item.numerosTexto
+                            : "Ainda não criado"}
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <div>
                   <h2 style={styles.cardTitle}>Link do sorteio</h2>
                   <p style={styles.subtitle2}>Copie ou compartilhe o link público</p>
                 </div>
@@ -1087,16 +1169,20 @@ export default function AdminPage() {
 
               <div style={styles.blocksGrid}>
                 <div style={styles.blockInfo}>
-                  <div style={styles.blockTitle}>Mãe</div>
+                  <div style={styles.blockTitle}>Site</div>
                   <div style={styles.blockText}>1 até 150</div>
                 </div>
                 <div style={styles.blockInfo}>
-                  <div style={styles.blockTitle}>Pai</div>
+                  <div style={styles.blockTitle}>Mãe</div>
                   <div style={styles.blockText}>151 até 300</div>
                 </div>
                 <div style={styles.blockInfo}>
+                  <div style={styles.blockTitle}>Pai</div>
+                  <div style={styles.blockText}>301 até 450</div>
+                </div>
+                <div style={styles.blockInfo}>
                   <div style={styles.blockTitle}>Vó</div>
-                  <div style={styles.blockText}>301 até 400</div>
+                  <div style={styles.blockText}>451 até 550</div>
                 </div>
               </div>
             </section>
@@ -1355,6 +1441,55 @@ const styles = {
     gap: "14px",
     marginBottom: "20px",
   },
+  cartelasGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: "14px",
+  },
+  cartelaCard: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: "18px",
+    padding: "16px",
+  },
+  cartelaTop: {
+    marginBottom: "12px",
+  },
+  cartelaNome: {
+    fontSize: "20px",
+    fontWeight: 800,
+    marginBottom: "4px",
+  },
+  cartelaRange: {
+    color: "#6b7280",
+    fontSize: "13px",
+  },
+  cartelaNumbers: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: "10px",
+  },
+  cartelaStat: {
+    background: "#fff",
+    borderRadius: "14px",
+    padding: "12px 14px",
+    border: "1px solid #e5e7eb",
+  },
+  cartelaLabel: {
+    display: "block",
+    fontSize: "12px",
+    color: "#6b7280",
+    marginBottom: "6px",
+  },
+  cartelaValue: {
+    fontSize: "24px",
+    fontWeight: 800,
+  },
+  cartelaValueSmall: {
+    fontSize: "14px",
+    fontWeight: 700,
+    wordBreak: "break-word",
+  },
   metricCard: {
     background: "#fff",
     borderRadius: "18px",
@@ -1611,4 +1746,3 @@ const styles = {
     verticalAlign: "top",
   },
 };
-
