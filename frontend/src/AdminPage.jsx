@@ -634,7 +634,7 @@ export default function AdminPage() {
     }
 
     const confirmed = window.confirm(
-      "Criar blocos padrão?\n\nMãe: 1-150\nPai: 151-300\nVó: 301-400"
+      "Criar blocos padrão?\n\nMãe: 151-300\nPai: 301-450\nVó: 451-550"
     );
     if (!confirmed) return;
 
