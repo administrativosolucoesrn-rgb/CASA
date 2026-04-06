@@ -6,6 +6,8 @@ const API_URL =
 
 const STORAGE_KEY = "casa_premiada_cliente";
 const ORGANIZER_WHATSAPP = "+5516993537516";
+const RECEIVER_NAME = "46.573.111 RAILANNY SILVA";
+const PAYMENT_TIME_MINUTES = 15;
 
 function onlyDigits(value = "") {
   return String(value).replace(/\D/g, "");
@@ -56,6 +58,76 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function getPixCode(data) {
+  return (
+    data?.pixCopiaECola ||
+    data?.pixCode ||
+    data?.copiaecola ||
+    data?.copyPaste ||
+    data?.brCode ||
+    data?.payload ||
+    ""
+  );
+}
+
+function getQrImage(data) {
+  return (
+    data?.qrCodeBase64 ||
+    data?.qr_code_base64 ||
+    data?.qrCode ||
+    data?.qr_code ||
+    data?.imagemQrcode ||
+    data?.imagemQrCode ||
+    data?.qrCodeImage ||
+    data?.qr_image ||
+    ""
+  );
+}
+
+function getPaymentId(data) {
+  return (
+    data?.paymentId ||
+    data?.pixId ||
+    data?.chargeId ||
+    data?.cobrancaId ||
+    data?.transactionId ||
+    data?.id ||
+    ""
+  );
+}
+
+function getExpirationDate(data) {
+  return (
+    data?.expiresAt ||
+    data?.expirationDate ||
+    data?.expiraEm ||
+    data?.expiracao ||
+    data?.createdAt ||
+    data?.geradoEm ||
+    null
+  );
+}
+
+function getTimerFromDate(dateString) {
+  if (!dateString) return PAYMENT_TIME_MINUTES * 60;
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return PAYMENT_TIME_MINUTES * 60;
+
+  const diffSeconds = Math.max(
+    0,
+    Math.floor((date.getTime() - Date.now()) / 1000)
+  );
+
+  return diffSeconds;
+}
+
+function formatTimer(seconds) {
+  const safe = Math.max(0, Number(seconds || 0));
+  const minutes = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 export default function SorteioPage() {
   const { slug } = useParams();
 
@@ -82,6 +154,10 @@ export default function SorteioPage() {
 
   const [showFloatingCta, setShowFloatingCta] = useState(true);
   const [logoVisible, setLogoVisible] = useState(true);
+
+  const [paymentStatus, setPaymentStatus] = useState("idle");
+  const [timeLeft, setTimeLeft] = useState(PAYMENT_TIME_MINUTES * 60);
+  const [statusLoading, setStatusLoading] = useState(false);
 
   const numbersRef = useRef(null);
   const quickCardRef = useRef(null);
@@ -130,6 +206,79 @@ export default function SorteioPage() {
     return () => observer.disconnect();
   }, [sorteio]);
 
+  useEffect(() => {
+    if (!paymentOpen || !pixData) return;
+    if (paymentStatus === "paid" || paymentStatus === "expired") return;
+
+    if (timeLeft <= 0) {
+      setPaymentStatus("expired");
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        const next = prev - 1;
+        if (next <= 0) {
+          clearInterval(timer);
+          setPaymentStatus("expired");
+          return 0;
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [paymentOpen, pixData, timeLeft, paymentStatus]);
+
+  useEffect(() => {
+    if (!paymentOpen || !pixData) return;
+    if (paymentStatus === "paid" || paymentStatus === "expired") return;
+
+    const paymentId = getPaymentId(pixData);
+    if (!paymentId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        setStatusLoading(true);
+
+        const res = await fetch(
+          `${API_URL}/api/pix/status/${encodeURIComponent(paymentId)}`
+        );
+
+        const data = await safeJson(res);
+
+        if (!res.ok) {
+          return;
+        }
+
+        const status = String(
+          data?.status || data?.paymentStatus || data?.pixStatus || ""
+        ).toLowerCase();
+
+        if (
+          ["paid", "approved", "aprovado", "confirmed", "confirmado"].includes(
+            status
+          )
+        ) {
+          setPaymentStatus("paid");
+          await loadSorteio();
+          clearInterval(interval);
+        } else if (
+          ["expired", "cancelled", "canceled", "expirado"].includes(status)
+        ) {
+          setPaymentStatus("expired");
+          clearInterval(interval);
+        }
+      } catch {
+        //
+      } finally {
+        setStatusLoading(false);
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [paymentOpen, pixData, paymentStatus, slug]);
+
   async function safeJson(res) {
     const text = await res.text();
     try {
@@ -164,8 +313,7 @@ export default function SorteioPage() {
   const totalNumbers = Number(sorteio?.totalNumbers || 0);
   const price = Number(sorteio?.price || 0);
   const heroImage =
-    sorteio?.image ||
-    "https://via.placeholder.com/1200x900?text=Premio";
+    sorteio?.image || "https://via.placeholder.com/1200x900?text=Premio";
   const title = sorteio?.title || "Casa Premiada Ribeirão";
   const description = sorteio?.descricao || sorteio?.subtitle || "";
 
@@ -182,7 +330,23 @@ export default function SorteioPage() {
   const totalValue = selectedNumbers.length * price;
 
   const whatsappDigits = onlyDigits(ORGANIZER_WHATSAPP);
-  const whatsappLink = `https://wa.me/${whatsappDigits}`;
+  const pixCode = getPixCode(pixData);
+  const qrImage = getQrImage(pixData);
+  const qrFallbackUrl = pixCode
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=420x420&data=${encodeURIComponent(
+        pixCode
+      )}`
+    : "";
+  const whatsappText = encodeURIComponent(
+    `Olá! Segue meu comprovante do sorteio ${title}. Meu nome: ${
+      customer.nome || ""
+    }. Números: ${
+      selectedNumbers.length
+        ? selectedNumbers.map((n) => String(n).padStart(3, "0")).join(", ")
+        : "-"
+    }.`
+  );
+  const whatsappLink = `https://wa.me/${whatsappDigits}?text=${whatsappText}`;
 
   function formatNumberLabel(num) {
     return String(num).padStart(3, "0");
@@ -213,6 +377,8 @@ export default function SorteioPage() {
   function toggleNumber(num) {
     if (unavailableNumbers.has(num)) return;
     setPixData(null);
+    setPaymentStatus("idle");
+    setTimeLeft(PAYMENT_TIME_MINUTES * 60);
 
     setSelectedNumbers((prev) => {
       const exists = prev.includes(num);
@@ -231,12 +397,18 @@ export default function SorteioPage() {
     setSelectedNumbers([]);
     setPixData(null);
     setPaymentOpen(false);
+    setPaymentStatus("idle");
+    setTimeLeft(PAYMENT_TIME_MINUTES * 60);
   }
 
   function openPayment() {
     if (!selectedNumbers.length) return;
     setErro("");
     setPaymentOpen(true);
+  }
+
+  function closePayment() {
+    setPaymentOpen(false);
   }
 
   function pickRandom(quantity) {
@@ -250,6 +422,8 @@ export default function SorteioPage() {
       [...new Set([...prev, ...chosen])].sort((a, b) => a - b)
     );
     setPixData(null);
+    setPaymentStatus("idle");
+    setTimeLeft(PAYMENT_TIME_MINUTES * 60);
   }
 
   async function handlePix() {
@@ -257,6 +431,8 @@ export default function SorteioPage() {
       setErro("");
       setSubmittingPix(true);
       setPixData(null);
+      setPaymentStatus("idle");
+      setTimeLeft(PAYMENT_TIME_MINUTES * 60);
 
       if (!customer.nome.trim()) {
         throw new Error("Digite seu nome.");
@@ -292,6 +468,20 @@ export default function SorteioPage() {
       }
 
       setPixData(data);
+      setPaymentStatus("pending");
+
+      const expiresAt = getExpirationDate(data);
+
+      if (expiresAt && String(expiresAt).includes("T")) {
+        setTimeLeft(getTimerFromDate(expiresAt));
+      } else if (data?.expiresInSeconds) {
+        setTimeLeft(Number(data.expiresInSeconds || PAYMENT_TIME_MINUTES * 60));
+      } else if (data?.expiresInMinutes) {
+        setTimeLeft(Number(data.expiresInMinutes || PAYMENT_TIME_MINUTES) * 60);
+      } else {
+        setTimeLeft(PAYMENT_TIME_MINUTES * 60);
+      }
+
       await loadSorteio();
     } catch (err) {
       setErro(err.message || "Erro ao gerar PIX.");
@@ -302,14 +492,8 @@ export default function SorteioPage() {
 
   async function copyPixCode() {
     try {
-      const code =
-        pixData?.pixCopiaECola ||
-        pixData?.pixCode ||
-        pixData?.copiaecola ||
-        "";
-
-      if (!code) return;
-      await navigator.clipboard.writeText(code);
+      if (!pixCode) return;
+      await navigator.clipboard.writeText(pixCode);
       setCopiedPix(true);
       setTimeout(() => setCopiedPix(false), 1800);
     } catch {
@@ -347,6 +531,12 @@ export default function SorteioPage() {
     }
   }
 
+  const showQuickChoice =
+    selectedNumbers.length === 0 && (!paymentOpen || !pixData);
+
+  const showChooseButton =
+    selectedNumbers.length === 0 && showFloatingCta;
+
   return (
     <div style={styles.page}>
       <style>{`
@@ -354,9 +544,9 @@ export default function SorteioPage() {
         body { margin: 0; background: #eef2ef; }
 
         @keyframes floatArrows {
-          0% { transform: translateY(0px); opacity: 0.9; }
+          0% { transform: translateY(-2px); opacity: 0.9; }
           50% { transform: translateY(6px); opacity: 1; }
-          100% { transform: translateY(0px); opacity: 0.9; }
+          100% { transform: translateY(-2px); opacity: 0.9; }
         }
 
         @keyframes pulseGlow {
@@ -375,6 +565,12 @@ export default function SorteioPage() {
           0% { transform: translateY(0); }
           50% { transform: translateY(-3px); }
           100% { transform: translateY(0); }
+        }
+
+        @keyframes successPulse {
+          0% { transform: scale(1); }
+          50% { transform: scale(1.02); }
+          100% { transform: scale(1); }
         }
       `}</style>
 
@@ -429,26 +625,31 @@ export default function SorteioPage() {
       )}
 
       {paymentOpen && (
-        <div
-          style={styles.paymentOverlay}
-          onClick={() => setPaymentOpen(false)}
-        >
-          <div
-            style={styles.paymentSheet}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={styles.paymentHeader}>
-              <div>
-                <div style={styles.paymentTitle}>Finalizar pagamento</div>
-                <div style={styles.paymentSub}>
-                  {selectedNumbers.length} número(s) • {formatCurrency(totalValue)}
+        <div style={styles.paymentOverlay} onClick={closePayment}>
+          <div style={styles.paymentSheet} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.paymentHeaderLarge}>
+              <div style={styles.paymentBrandRow}>
+                {sorteio?.logoUrl && logoVisible ? (
+                  <img
+                    src={sorteio.logoUrl}
+                    alt="Logo"
+                    style={styles.paymentLogo}
+                    onError={() => setLogoVisible(false)}
+                  />
+                ) : (
+                  <div style={styles.paymentLogoFallback}>CP</div>
+                )}
+
+                <div>
+                  <div style={styles.paymentTitle}>Finalizar pagamento</div>
+                  <div style={styles.paymentSub}>
+                    {selectedNumbers.length} número(s) •{" "}
+                    {formatCurrency(totalValue)}
+                  </div>
                 </div>
               </div>
 
-              <button
-                style={styles.closeBtn}
-                onClick={() => setPaymentOpen(false)}
-              >
+              <button style={styles.closeBtn} onClick={closePayment}>
                 ×
               </button>
             </div>
@@ -506,62 +707,163 @@ export default function SorteioPage() {
               </>
             ) : (
               <div style={styles.pixModalContent}>
-                <div style={styles.orangeTitle}>Aguardando o pagamento</div>
-                <div style={styles.helpText}>
-                  Finalize agora pelo PIX para garantir seus números.
-                </div>
-
-                {pixData?.qrCodeBase64 ? (
-                  <div style={{ textAlign: "center", marginBottom: 16 }}>
-                    <img
-                      src={
-                        pixData.qrCodeBase64.startsWith("data:image")
-                          ? pixData.qrCodeBase64
-                          : `data:image/png;base64,${pixData.qrCodeBase64}`
-                      }
-                      alt="QR Code PIX"
-                      style={styles.qrImage}
-                    />
+                <div
+                  style={{
+                    ...styles.statusBanner,
+                    ...(paymentStatus === "paid"
+                      ? styles.statusBannerPaid
+                      : paymentStatus === "expired"
+                      ? styles.statusBannerExpired
+                      : styles.statusBannerPending),
+                  }}
+                >
+                  <div style={styles.statusBannerTitle}>
+                    {paymentStatus === "paid"
+                      ? "Pagamento aprovado"
+                      : paymentStatus === "expired"
+                      ? "Tempo expirado"
+                      : "Aguardando o pagamento"}
                   </div>
-                ) : null}
 
-                <div style={styles.pixRow}>
-                  <span>Nome</span>
-                  <span>CASA PREMIADA</span>
+                  <div style={styles.statusBannerText}>
+                    {paymentStatus === "paid"
+                      ? "Seu pagamento foi confirmado com sucesso."
+                      : paymentStatus === "expired"
+                      ? "O tempo deste pagamento terminou. Gere um novo PIX para continuar."
+                      : "Finalize agora pelo PIX para garantir seus números."}
+                  </div>
                 </div>
 
-                <div style={styles.pixRow}>
-                  <span>Valor total</span>
-                  <span>{formatCurrency(totalValue)}</span>
-                </div>
+                {paymentStatus === "paid" ? (
+                  <div style={styles.successCard}>
+                    <div style={styles.successEmoji}>✅</div>
+                    <div style={styles.successTitle}>Pagamento confirmado</div>
+                    <div style={styles.successText}>
+                      Seus números foram aprovados automaticamente.
+                    </div>
 
-                <div style={styles.field}>
-                  <label style={styles.label}>Chave PIX</label>
-                  <div style={styles.copyRow}>
-                    <input
-                      readOnly
-                      style={{ ...styles.input, marginBottom: 0 }}
-                      value={
-                        pixData?.pixCopiaECola ||
-                        pixData?.pixCode ||
-                        pixData?.copiaecola ||
-                        ""
-                      }
-                    />
-                    <button style={styles.copyMiniBtn} onClick={copyPixCode}>
-                      {copiedPix ? "Copiado" : "Copiar"}
+                    <div style={styles.cartNumbersInlineCenter}>
+                      {selectedNumbers.map((n) => (
+                        <span key={n} style={styles.cartNumberPillSuccess}>
+                          {formatNumberLabel(n)}
+                        </span>
+                      ))}
+                    </div>
+
+                    <button style={styles.greenWideButton} onClick={closePayment}>
+                      Fechar
                     </button>
                   </div>
-                </div>
+                ) : (
+                  <div style={styles.pixLargeGrid}>
+                    <div style={styles.pixQrCard}>
+                      <div style={styles.qrCardTop}>
+                        <div style={styles.qrCardTitle}>QR Code PIX</div>
+                        <div style={styles.qrCardSubtitle}>
+                          Escaneie pelo aplicativo do seu banco
+                        </div>
+                      </div>
 
-                <a
-                  href={whatsappLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.sendBtn}
-                >
-                  Enviar comprovante
-                </a>
+                      <div style={styles.qrImageWrap}>
+                        {qrImage ? (
+                          <img
+                            src={
+                              String(qrImage).startsWith("data:image")
+                                ? qrImage
+                                : `data:image/png;base64,${qrImage}`
+                            }
+                            alt="QR Code PIX"
+                            style={styles.qrImageLarge}
+                          />
+                        ) : pixCode ? (
+                          <img
+                            src={qrFallbackUrl}
+                            alt="QR Code PIX"
+                            style={styles.qrImageLarge}
+                          />
+                        ) : (
+                          <div style={styles.qrFallbackEmpty}>
+                            QR Code indisponível
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={styles.timerBox}>
+                        <span style={styles.timerLabel}>Tempo restante</span>
+                        <span
+                          style={{
+                            ...styles.timerValue,
+                            color: timeLeft <= 60 ? "#dc2626" : "#111827",
+                          }}
+                        >
+                          {formatTimer(timeLeft)}
+                        </span>
+                      </div>
+
+                      {statusLoading && paymentStatus === "pending" ? (
+                        <div style={styles.statusChecking}>
+                          Verificando pagamento...
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div style={styles.pixDetailsCard}>
+                      <div style={styles.pixRowStrong}>
+                        <span>Recebedor</span>
+                        <span>{RECEIVER_NAME}</span>
+                      </div>
+
+                      <div style={styles.pixRowStrong}>
+                        <span>Valor total</span>
+                        <span>{formatCurrency(totalValue)}</span>
+                      </div>
+
+                      <div style={styles.pixRowStrong}>
+                        <span>Números</span>
+                        <span>{selectedNumbers.length}</span>
+                      </div>
+
+                      <div style={styles.field}>
+                        <label style={styles.label}>Código PIX copia e cola</label>
+                        <div style={styles.copyRowLarge}>
+                          <textarea
+                            readOnly
+                            style={styles.textareaPix}
+                            value={pixCode}
+                          />
+                          <button
+                            style={styles.copyLargeBtn}
+                            onClick={copyPixCode}
+                          >
+                            {copiedPix ? "Copiado" : "Copiar"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={styles.paymentNotice}>
+                        Após o pagamento, a aprovação será feita automaticamente
+                        quando o servidor confirmar a cobrança.
+                      </div>
+
+                      <div style={styles.paymentBottomActions}>
+                        <a
+                          href={whatsappLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={styles.sendBtn}
+                        >
+                          Enviar comprovante
+                        </a>
+
+                        {paymentStatus === "expired" ? (
+                          <button style={styles.payBtn} onClick={handlePix}>
+                            Gerar novo PIX
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -643,7 +945,9 @@ export default function SorteioPage() {
 
             <div style={styles.infoMiniBox}>
               <div style={styles.infoLabel}>Data sorteio</div>
-              <div style={styles.infoValueSmall}>{formatDateTime(sorteio?.drawDate)}</div>
+              <div style={styles.infoValueSmall}>
+                {formatDateTime(sorteio?.drawDate)}
+              </div>
             </div>
           </div>
         </div>
@@ -661,45 +965,65 @@ export default function SorteioPage() {
 
         <div style={styles.legendCard}>
           <div style={styles.legendRow}>
-            <div style={{ ...styles.legendItem, background: "#e2e8f0", color: "#1f2937" }}>
+            <div
+              style={{
+                ...styles.legendItem,
+                background: "#e2e8f0",
+                color: "#1f2937",
+              }}
+            >
               Disponíveis
             </div>
-            <div style={{ ...styles.legendItem, background: "#111827", color: "#fff" }}>
+            <div
+              style={{
+                ...styles.legendItem,
+                background: "#111827",
+                color: "#fff",
+              }}
+            >
               Reservados
             </div>
-            <div style={{ ...styles.legendItem, background: "#166534", color: "#fff" }}>
+            <div
+              style={{
+                ...styles.legendItem,
+                background: "#166534",
+                color: "#fff",
+              }}
+            >
               Comprados
             </div>
           </div>
         </div>
 
-        <div ref={quickCardRef} style={styles.quickCard}>
-          <div style={styles.quickTopLine}>
-            <span style={styles.quickIcon}>⚡</span>
-            <div>
-              <div style={styles.quickTitle}>Compra rápida</div>
-              <div style={styles.quickText}>Escolha aleatória dos números</div>
+        {showQuickChoice ? (
+          <div ref={quickCardRef} style={styles.quickCard}>
+            <div style={styles.quickTopLine}>
+              <span style={styles.quickIcon}>⚡</span>
+              <div>
+                <div style={styles.quickTitle}>Compra rápida</div>
+                <div style={styles.quickText}>Escolha aleatória dos números</div>
+              </div>
+            </div>
+
+            <div style={styles.quickGrid}>
+              <button style={styles.quickBtn} onClick={() => pickRandom(2)}>
+                +2
+              </button>
+              <button style={styles.quickBtn} onClick={() => pickRandom(5)}>
+                +5
+              </button>
+              <button style={styles.quickBtn} onClick={() => pickRandom(10)}>
+                +10
+              </button>
+              <button style={styles.quickBtn} onClick={() => pickRandom(15)}>
+                +15
+              </button>
+              <button style={styles.quickBtn} onClick={() => pickRandom(20)}>
+                +20
+              </button>
             </div>
           </div>
-
-          <div style={styles.quickGrid}>
-            <button style={styles.quickBtn} onClick={() => pickRandom(2)}>
-              +2
-            </button>
-            <button style={styles.quickBtn} onClick={() => pickRandom(5)}>
-              +5
-            </button>
-            <button style={styles.quickBtn} onClick={() => pickRandom(10)}>
-              +10
-            </button>
-            <button style={styles.quickBtn} onClick={() => pickRandom(15)}>
-              +15
-            </button>
-            <button style={styles.quickBtn} onClick={() => pickRandom(20)}>
-              +20
-            </button>
-          </div>
-        </div>
+        ) : null}
 
         <div style={styles.numberGrid}>
           {Array.from({ length: totalNumbers }, (_, index) => {
@@ -758,7 +1082,7 @@ export default function SorteioPage() {
             </button>
           </div>
         </div>
-      ) : showFloatingCta ? (
+      ) : showChooseButton ? (
         <div style={styles.floatingWrap}>
           <button style={styles.floatingBtn} onClick={scrollToNumbers}>
             <span>✨ Escolher números</span>
@@ -1059,6 +1383,19 @@ const styles = {
     fontSize: 16,
     background: "#fff",
   },
+  textareaPix: {
+    width: "100%",
+    minHeight: 118,
+    border: "1px solid #d0d5dd",
+    borderRadius: 16,
+    padding: 14,
+    fontSize: 15,
+    background: "#f8fafc",
+    resize: "none",
+    lineHeight: 1.5,
+    color: "#111827",
+    fontFamily: "Arial, sans-serif",
+  },
   errorBox: {
     background: "#fef3f2",
     color: "#b42318",
@@ -1078,32 +1415,56 @@ const styles = {
     fontSize: 17,
     fontWeight: 600,
   },
-  orangeTitle: {
-    fontSize: 24,
-    fontWeight: 600,
-    color: "#d97706",
-    marginBottom: 6,
-  },
   qrImage: {
     width: "100%",
     maxWidth: 240,
     borderRadius: 16,
   },
-  pixRow: {
+  qrImageLarge: {
+    width: "100%",
+    maxWidth: 320,
+    display: "block",
+    borderRadius: 24,
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    padding: 14,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  },
+  qrImageWrap: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 18,
+    minHeight: 290,
+  },
+  qrFallbackEmpty: {
+    width: "100%",
+    minHeight: 250,
+    borderRadius: 22,
+    border: "1px dashed #d0d5dd",
+    background: "#f8fafc",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "#667085",
+    fontSize: 15,
+    fontWeight: 500,
+  },
+  pixRowStrong: {
     display: "flex",
     justifyContent: "space-between",
     gap: 12,
-    alignItems: "center",
-    marginBottom: 12,
+    alignItems: "flex-start",
+    marginBottom: 14,
     fontSize: 16,
     color: "#344054",
-    fontWeight: 400,
+    fontWeight: 600,
   },
-  copyRow: {
+  copyRowLarge: {
     display: "grid",
     gridTemplateColumns: "1fr auto",
-    gap: 8,
-    alignItems: "center",
+    gap: 10,
+    alignItems: "stretch",
   },
   copyMiniBtn: {
     minHeight: 52,
@@ -1113,13 +1474,23 @@ const styles = {
     padding: "0 16px",
     fontWeight: 600,
   },
+  copyLargeBtn: {
+    minWidth: 120,
+    border: "none",
+    borderRadius: 18,
+    background: "#f4d36f",
+    padding: "0 18px",
+    fontWeight: 700,
+    fontSize: 18,
+    color: "#111827",
+  },
   sendBtn: {
     display: "block",
     textAlign: "center",
     textDecoration: "none",
     background: "#15803d",
     color: "#fff",
-    borderRadius: 14,
+    borderRadius: 18,
     padding: "16px",
     fontSize: 17,
     fontWeight: 600,
@@ -1190,6 +1561,13 @@ const styles = {
     maxHeight: 70,
     overflowY: "auto",
   },
+  cartNumbersInlineCenter: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "center",
+    margin: "14px 0 18px",
+  },
   cartNumberPill: {
     background: "#eefaf3",
     color: "#0f8f4c",
@@ -1198,6 +1576,15 @@ const styles = {
     padding: "6px 10px",
     fontWeight: 500,
     fontSize: 12,
+  },
+  cartNumberPillSuccess: {
+    background: "#ecfdf3",
+    color: "#166534",
+    border: "1px solid #b7e4c7",
+    borderRadius: 999,
+    padding: "8px 12px",
+    fontWeight: 700,
+    fontSize: 13,
   },
   cartActionRow: {
     display: "grid",
@@ -1243,22 +1630,22 @@ const styles = {
   paymentOverlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.52)",
+    background: "rgba(0,0,0,0.58)",
     display: "flex",
-    alignItems: "flex-end",
+    alignItems: "center",
     justifyContent: "center",
+    padding: 14,
     zIndex: 120,
   },
   paymentSheet: {
     width: "100%",
-    maxWidth: 620,
+    maxWidth: 980,
     background: "#fff",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: 18,
-    maxHeight: "90vh",
+    borderRadius: 30,
+    padding: 20,
+    maxHeight: "94vh",
     overflowY: "auto",
-    boxShadow: "0 -18px 40px rgba(0,0,0,0.18)",
+    boxShadow: "0 24px 60px rgba(0,0,0,0.28)",
   },
   paymentHeader: {
     display: "flex",
@@ -1267,15 +1654,49 @@ const styles = {
     gap: 12,
     marginBottom: 14,
   },
+  paymentHeaderLarge: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 18,
+  },
+  paymentBrandRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+  },
+  paymentLogo: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    objectFit: "contain",
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    padding: 8,
+  },
+  paymentLogoFallback: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#111827",
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: 700,
+  },
   paymentTitle: {
-    fontSize: 21,
-    fontWeight: 600,
+    fontSize: 29,
+    fontWeight: 700,
     color: "#111827",
+    lineHeight: 1.1,
   },
   paymentSub: {
     marginTop: 4,
     color: "#667085",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 400,
   },
   cartNumbersBoxModal: {
@@ -1317,6 +1738,107 @@ const styles = {
   },
   pixModalContent: {
     paddingTop: 4,
+  },
+  pixLargeGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.05fr 0.95fr",
+    gap: 18,
+  },
+  pixQrCard: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: 24,
+    padding: 18,
+  },
+  pixDetailsCard: {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 24,
+    padding: 18,
+  },
+  qrCardTop: {
+    marginBottom: 14,
+  },
+  qrCardTitle: {
+    fontSize: 20,
+    fontWeight: 700,
+    color: "#111827",
+    marginBottom: 4,
+  },
+  qrCardSubtitle: {
+    fontSize: 14,
+    color: "#667085",
+  },
+  statusBanner: {
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 18,
+  },
+  statusBannerPending: {
+    background: "#fff7ed",
+    border: "1px solid #fdba74",
+  },
+  statusBannerPaid: {
+    background: "#ecfdf3",
+    border: "1px solid #86efac",
+  },
+  statusBannerExpired: {
+    background: "#fef2f2",
+    border: "1px solid #fca5a5",
+  },
+  statusBannerTitle: {
+    fontSize: 28,
+    fontWeight: 700,
+    marginBottom: 6,
+    color: "#111827",
+  },
+  statusBannerText: {
+    fontSize: 16,
+    lineHeight: 1.5,
+    color: "#475467",
+  },
+  timerBox: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "14px 16px",
+    borderRadius: 18,
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+  },
+  timerLabel: {
+    color: "#667085",
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  timerValue: {
+    color: "#111827",
+    fontSize: 24,
+    fontWeight: 800,
+    letterSpacing: 1,
+  },
+  statusChecking: {
+    marginTop: 12,
+    textAlign: "center",
+    color: "#667085",
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  paymentNotice: {
+    marginTop: 10,
+    padding: 14,
+    borderRadius: 16,
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    color: "#475467",
+    fontSize: 14,
+    lineHeight: 1.5,
+  },
+  paymentBottomActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 10,
   },
   modalHeader: {
     display: "flex",
@@ -1407,5 +1929,28 @@ const styles = {
     color: "#344054",
     fontSize: 15,
     background: "#f8fafc",
+  },
+  successCard: {
+    background: "#ecfdf3",
+    border: "1px solid #86efac",
+    borderRadius: 24,
+    padding: 24,
+    textAlign: "center",
+    animation: "successPulse 1.4s infinite",
+  },
+  successEmoji: {
+    fontSize: 42,
+    marginBottom: 10,
+  },
+  successTitle: {
+    color: "#166534",
+    fontSize: 26,
+    fontWeight: 800,
+    marginBottom: 6,
+  },
+  successText: {
+    color: "#14532d",
+    fontSize: 16,
+    lineHeight: 1.5,
   },
 };
