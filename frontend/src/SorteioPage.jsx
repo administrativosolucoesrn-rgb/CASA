@@ -43,8 +43,7 @@ export default function SorteioPage() {
   const [sorteio, setSorteio] = useState(null);
 
   const [selectedNumbers, setSelectedNumbers] = useState([]);
-  const [showCheckout, setShowCheckout] = useState(false);
-  const [showFloatingButton, setShowFloatingButton] = useState(true);
+  const [paymentOpen, setPaymentOpen] = useState(false);
 
   const [customer, setCustomer] = useState({
     nome: "",
@@ -61,7 +60,6 @@ export default function SorteioPage() {
   const [myNumbersResult, setMyNumbersResult] = useState(null);
 
   const numbersRef = useRef(null);
-  const checkoutRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -82,17 +80,6 @@ export default function SorteioPage() {
     if (!slug) return;
     loadSorteio();
   }, [slug]);
-
-  useEffect(() => {
-    function handleScroll() {
-      const nearTop = window.scrollY < 140;
-      setShowFloatingButton(nearTop && selectedNumbers.length === 0 && !showCheckout);
-    }
-
-    handleScroll();
-    window.addEventListener("scroll", handleScroll);
-    return () => window.removeEventListener("scroll", handleScroll);
-  }, [selectedNumbers.length, showCheckout]);
 
   async function safeJson(res) {
     const text = await res.text();
@@ -151,7 +138,7 @@ export default function SorteioPage() {
   }, [sorteio]);
 
   function formatNumberLabel(num) {
-    return `N° ${String(num).padStart(3, "0")}`;
+    return String(num).padStart(3, "0");
   }
 
   function handleCustomerChange(field, value) {
@@ -164,26 +151,6 @@ export default function SorteioPage() {
 
   function scrollToNumbers() {
     numbersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  function goToCheckout() {
-    setShowCheckout(true);
-    setShowFloatingButton(false);
-    setTimeout(() => {
-      checkoutRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }, 100);
-  }
-
-  function clearSelection() {
-    setSelectedNumbers([]);
-    setShowCheckout(false);
-    setPixData(null);
-    if (window.scrollY < 140) {
-      setShowFloatingButton(true);
-    }
   }
 
   function getAvailableNumbers() {
@@ -206,14 +173,23 @@ export default function SorteioPage() {
         ? prev.filter((n) => n !== num)
         : [...prev, num].sort((a, b) => a - b);
 
-      if (!updated.length && !showCheckout && window.scrollY < 140) {
-        setShowFloatingButton(true);
-      } else {
-        setShowFloatingButton(false);
+      if (updated.length === 0) {
+        setPaymentOpen(false);
       }
-
       return updated;
     });
+  }
+
+  function clearSelection() {
+    setSelectedNumbers([]);
+    setPixData(null);
+    setPaymentOpen(false);
+  }
+
+  function openPayment() {
+    if (!selectedNumbers.length) return;
+    setErro("");
+    setPaymentOpen(true);
   }
 
   function pickRandom(quantity) {
@@ -226,8 +202,6 @@ export default function SorteioPage() {
     setSelectedNumbers((prev) =>
       [...new Set([...prev, ...chosen])].sort((a, b) => a - b)
     );
-    setShowCheckout(false);
-    setShowFloatingButton(false);
     setPixData(null);
   }
 
@@ -272,13 +246,6 @@ export default function SorteioPage() {
 
       setPixData(data);
       await loadSorteio();
-
-      setTimeout(() => {
-        document.getElementById("pix-box")?.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
-      }, 150);
     } catch (err) {
       setErro(err.message || "Erro ao gerar PIX.");
     } finally {
@@ -360,11 +327,6 @@ export default function SorteioPage() {
       <style>{`
         * { box-sizing: border-box; }
         body { margin: 0; background: #eef2ef; }
-        @keyframes arrowFloat {
-          0% { transform: translateY(0); opacity: 0.95; }
-          50% { transform: translateY(5px); opacity: 1; }
-          100% { transform: translateY(0); opacity: 0.95; }
-        }
       `}</style>
 
       {myNumbersOpen && (
@@ -404,13 +366,155 @@ export default function SorteioPage() {
                   <div style={{ marginTop: 8, lineHeight: 1.5 }}>
                     {(myNumbersResult?.numeros || []).length
                       ? myNumbersResult.numeros
-                          .map((n) => formatNumberLabel(n))
+                          .map((n) => `N° ${formatNumberLabel(n)}`)
                           .join(", ")
                       : "Nenhum número encontrado."}
                   </div>
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {paymentOpen && (
+        <div
+          style={styles.paymentOverlay}
+          onClick={() => setPaymentOpen(false)}
+        >
+          <div
+            style={styles.paymentSheet}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.paymentHeader}>
+              <div>
+                <div style={styles.paymentTitle}>Finalizar pagamento</div>
+                <div style={styles.paymentSub}>
+                  {selectedNumbers.length} número(s) • {formatCurrency(totalValue)}
+                </div>
+              </div>
+
+              <button
+                style={styles.closeBtn}
+                onClick={() => setPaymentOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            {!pixData ? (
+              <>
+                <div style={styles.cartNumbersBoxModal}>
+                  <div style={styles.cartNumbersLabel}>Seus números</div>
+                  <div style={styles.cartNumbersInline}>
+                    {selectedNumbers.map((n) => (
+                      <span key={n} style={styles.cartNumberPillModal}>
+                        {formatNumberLabel(n)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Nome</label>
+                  <input
+                    style={styles.input}
+                    value={customer.nome}
+                    onChange={(e) => handleCustomerChange("nome", e.target.value)}
+                    placeholder="Digite seu nome"
+                  />
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Celular</label>
+                  <input
+                    style={styles.input}
+                    value={formatPhone(customer.whatsapp)}
+                    onChange={(e) =>
+                      handleCustomerChange("whatsapp", e.target.value)
+                    }
+                    placeholder="(00) 00000-0000"
+                  />
+                </div>
+
+                {erro ? <div style={styles.errorBox}>{erro}</div> : null}
+
+                <div style={styles.modalActions}>
+                  <button style={styles.modalGhostBtn} onClick={clearSelection}>
+                    Limpar seleção
+                  </button>
+
+                  <button
+                    style={styles.payBtn}
+                    onClick={handlePix}
+                    disabled={submittingPix}
+                  >
+                    {submittingPix ? "Gerando pagamento..." : "Gerar PIX"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div style={styles.pixModalContent}>
+                <div style={styles.orangeTitle}>Aguardando o pagamento!</div>
+                <div style={styles.helpText}>
+                  Finalize agora pelo PIX para garantir seus números.
+                </div>
+
+                {pixData?.qrCodeBase64 ? (
+                  <div style={{ textAlign: "center", marginBottom: 16 }}>
+                    <img
+                      src={
+                        pixData.qrCodeBase64.startsWith("data:image")
+                          ? pixData.qrCodeBase64
+                          : `data:image/png;base64,${pixData.qrCodeBase64}`
+                      }
+                      alt="QR Code PIX"
+                      style={styles.qrImage}
+                    />
+                  </div>
+                ) : null}
+
+                <div style={styles.pixRow}>
+                  <span>Nome</span>
+                  <strong>CASA PREMIADA</strong>
+                </div>
+
+                <div style={styles.pixRow}>
+                  <span>Valor total</span>
+                  <strong>{formatCurrency(totalValue)}</strong>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Chave PIX</label>
+                  <div style={styles.copyRow}>
+                    <input
+                      readOnly
+                      style={{ ...styles.input, marginBottom: 0 }}
+                      value={
+                        pixData?.pixCopiaECola ||
+                        pixData?.pixCode ||
+                        pixData?.copiaecola ||
+                        ""
+                      }
+                    />
+                    <button style={styles.copyMiniBtn} onClick={copyPixCode}>
+                      {copiedPix ? "Copiado" : "Copiar"}
+                    </button>
+                  </div>
+                </div>
+
+                {whatsappLink ? (
+                  <a
+                    href={whatsappLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={styles.sendBtn}
+                  >
+                    Enviar comprovante
+                  </a>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -452,18 +556,16 @@ export default function SorteioPage() {
         </div>
 
         <div style={styles.card}>
-          <div style={styles.mainTitle}>{title}</div>
-          <div style={styles.mainSubtitle}>Organizado por {companyName}</div>
-
           <div style={styles.metaRowSingle}>
-            <div style={styles.metaPillFull}>
+            <div style={styles.metaPill}>
               Sorteio: {formatDate(sorteio?.drawDate)}
             </div>
           </div>
 
-          <div style={styles.shareRowCompact}>
-            <div style={styles.shareTitleSmall}>Compartilhar sorteio</div>
-            <div style={styles.shareButtonsCompact}>
+          <div style={styles.shareHeaderRow}>
+            <div style={styles.shareTitle}>Compartilhar sorteio</div>
+
+            <div style={styles.shareRowCompact}>
               {whatsappLink ? (
                 <a
                   href={whatsappLink}
@@ -495,12 +597,17 @@ export default function SorteioPage() {
         ) : null}
 
         <div ref={numbersRef} style={styles.sectionHeadline}>
-          Clique e escolha seu número da sorte
+          <span style={styles.headlineBadge}>✨</span>
+          Escolher números
         </div>
 
         <div style={styles.quickCard}>
-          <div style={styles.quickHeadline}>
-            COMPRA RÁPIDA - escolha aleatória dos números
+          <div style={styles.quickTopLine}>
+            <span style={styles.quickIcon}>⚡</span>
+            <div>
+              <div style={styles.quickTitle}>Compra rápida</div>
+              <div style={styles.quickText}>Escolha aleatória dos números</div>
+            </div>
           </div>
 
           <div style={styles.quickGrid}>
@@ -521,22 +628,6 @@ export default function SorteioPage() {
             </button>
           </div>
         </div>
-
-        {selectedNumbers.length > 0 ? (
-          <div style={styles.card}>
-            <div style={styles.sectionTitle}>Números selecionados</div>
-            <div style={styles.selectedWrap}>
-              {selectedNumbers.map((n) => (
-                <span key={n} style={styles.selectedChip}>
-                  {formatNumberLabel(n)}
-                </span>
-              ))}
-            </div>
-            <div style={styles.selectedSummary}>
-              {selectedNumbers.length} número(s) • {formatCurrency(totalValue)}
-            </div>
-          </div>
-        ) : null}
 
         <div style={styles.numberGrid}>
           {Array.from({ length: totalNumbers }, (_, index) => {
@@ -560,160 +651,42 @@ export default function SorteioPage() {
             );
           })}
         </div>
-
-        {showCheckout ? (
-          <div ref={checkoutRef} style={styles.card}>
-            <div style={styles.sectionTitle}>Pagar agora</div>
-            <div style={styles.helpText}>
-              Sua reserva será mantida por 10 minutos para pagamento.
-            </div>
-
-            <div style={styles.field}>
-              <label style={styles.label}>Nome</label>
-              <input
-                style={styles.input}
-                value={customer.nome}
-                onChange={(e) => handleCustomerChange("nome", e.target.value)}
-                placeholder="Digite seu nome"
-              />
-            </div>
-
-            <div style={styles.field}>
-              <label style={styles.label}>Celular</label>
-              <input
-                style={styles.input}
-                value={formatPhone(customer.whatsapp)}
-                onChange={(e) =>
-                  handleCustomerChange("whatsapp", e.target.value)
-                }
-                placeholder="(00) 00000-0000"
-              />
-            </div>
-
-            <div style={styles.resumeBox}>
-              <div>
-                <strong>Números:</strong>{" "}
-                {selectedNumbers.map((n) => formatNumberLabel(n)).join(", ")}
-              </div>
-              <div style={{ marginTop: 8 }}>
-                <strong>Total:</strong> {formatCurrency(totalValue)}
-              </div>
-            </div>
-
-            {erro ? <div style={styles.errorBox}>{erro}</div> : null}
-
-            <button
-              style={styles.payBtn}
-              onClick={handlePix}
-              disabled={submittingPix}
-            >
-              {submittingPix ? "Gerando pagamento..." : "Pagar"}
-            </button>
-          </div>
-        ) : null}
-
-        {pixData ? (
-          <div id="pix-box" style={styles.card}>
-            <div style={styles.orangeTitle}>Aguardando o pagamento!</div>
-            <div style={styles.helpText}>Finalize o pagamento</div>
-
-            <div style={styles.infoCard}>
-              <div style={styles.sectionTitle}>Veja o passo a passo</div>
-              <ol style={styles.stepList}>
-                <li>Copie a chave PIX.</li>
-                <li>Abra o aplicativo do seu banco e escolha PIX.</li>
-                <li>Faça o pagamento e envie o comprovante no WhatsApp.</li>
-              </ol>
-
-              {pixData?.qrCodeBase64 ? (
-                <div style={{ textAlign: "center", marginBottom: 16 }}>
-                  <img
-                    src={
-                      pixData.qrCodeBase64.startsWith("data:image")
-                        ? pixData.qrCodeBase64
-                        : `data:image/png;base64,${pixData.qrCodeBase64}`
-                    }
-                    alt="QR Code PIX"
-                    style={styles.qrImage}
-                  />
-                </div>
-              ) : null}
-
-              <div style={styles.pixHeading}>Dados do PIX</div>
-
-              <div style={styles.pixRow}>
-                <span>Nome</span>
-                <strong>CASA PREMIADA</strong>
-              </div>
-
-              <div style={styles.pixRow}>
-                <span>Valor total</span>
-                <strong>{formatCurrency(totalValue)}</strong>
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Chave PIX</label>
-                <div style={styles.copyRow}>
-                  <input
-                    readOnly
-                    style={{ ...styles.input, marginBottom: 0 }}
-                    value={
-                      pixData?.pixCopiaECola ||
-                      pixData?.pixCode ||
-                      pixData?.copiaecola ||
-                      ""
-                    }
-                  />
-                  <button style={styles.copyMiniBtn} onClick={copyPixCode}>
-                    {copiedPix ? "Copiado" : "Copiar"}
-                  </button>
-                </div>
-              </div>
-
-              {whatsappLink ? (
-                <a
-                  href={whatsappLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.sendBtn}
-                >
-                  Enviar comprovante
-                </a>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
       </div>
 
-      {showFloatingButton ? (
-        <div style={styles.floatingWrap}>
-          <button style={styles.floatingBtn} onClick={scrollToNumbers}>
-            <span style={styles.floatingArrow}>↓</span>
-            <span>Escolher números</span>
-            <span style={styles.floatingArrow}>↑</span>
-          </button>
-        </div>
-      ) : null}
+      {selectedNumbers.length > 0 ? (
+        <div style={styles.cartBar}>
+          <div style={styles.cartTopRow}>
+            <strong style={styles.cartCount}>
+              {selectedNumbers.length} número(s)
+            </strong>
+            <strong style={styles.cartTotal}>{formatCurrency(totalValue)}</strong>
+          </div>
 
-      {selectedNumbers.length > 0 && !showCheckout ? (
-        <div style={styles.cartWrap}>
-          <div style={styles.cartBar}>
-            <div style={styles.cartInfo}>
-              <div style={styles.cartQty}>{selectedNumbers.length} número(s)</div>
-              <div style={styles.cartTotal}>{formatCurrency(totalValue)}</div>
-            </div>
+          <div style={styles.cartNumbersInline}>
+            {selectedNumbers.map((n) => (
+              <span key={n} style={styles.cartNumberPill}>
+                {formatNumberLabel(n)}
+              </span>
+            ))}
+          </div>
 
-            <div style={styles.cartActions}>
-              <button style={styles.cartClearBtn} onClick={clearSelection}>
-                Limpar seleção
-              </button>
-              <button style={styles.cartContinueBtn} onClick={goToCheckout}>
-                Continuar para pagamento
-              </button>
-            </div>
+          <div style={styles.cartActionRow}>
+            <button style={styles.cartClearBtn} onClick={clearSelection}>
+              Limpar seleção
+            </button>
+
+            <button style={styles.cartPayBtn} onClick={openPayment}>
+              Continuar para pagamento
+            </button>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div style={styles.floatingWrap}>
+          <button style={styles.floatingBtn} onClick={scrollToNumbers}>
+            ✨ Escolher números
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -722,7 +695,7 @@ const styles = {
   page: {
     minHeight: "100vh",
     background: "#eef2ef",
-    paddingBottom: 140,
+    paddingBottom: 150,
     fontFamily: "Arial, sans-serif",
   },
   centerWrap: {
@@ -808,7 +781,7 @@ const styles = {
     color: "#fff",
     padding: 16,
     display: "grid",
-    gridTemplateColumns: "1fr 1.2fr 1fr",
+    gridTemplateColumns: "1fr 1.15fr 1fr",
     gap: 10,
   },
   infoMiniBox: {},
@@ -836,44 +809,34 @@ const styles = {
     boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
     marginBottom: 16,
   },
-  mainTitle: {
-    fontSize: 30,
-    fontWeight: 900,
-    lineHeight: 1.05,
-    color: "#111827",
-  },
-  mainSubtitle: {
-    marginTop: 6,
-    fontSize: 17,
-    color: "#475467",
-  },
   metaRowSingle: {
-    marginTop: 14,
-    marginBottom: 14,
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 10,
+    marginBottom: 16,
   },
-  metaPillFull: {
+  metaPill: {
     background: "#f8fafc",
     border: "1px solid #e5e7eb",
     borderRadius: 14,
-    padding: "12px 14px",
+    padding: "14px 16px",
     textAlign: "center",
-    fontWeight: 800,
+    fontWeight: 900,
+    fontSize: 18,
   },
-  shareRowCompact: {
+  shareHeaderRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
     flexWrap: "wrap",
-    borderTop: "1px solid #eaecf0",
-    paddingTop: 12,
   },
-  shareTitleSmall: {
-    fontSize: 15,
-    fontWeight: 800,
-    color: "#344054",
+  shareTitle: {
+    fontSize: 16,
+    fontWeight: 900,
+    color: "#1f2937",
   },
-  shareButtonsCompact: {
+  shareRowCompact: {
     display: "flex",
     gap: 8,
     flexWrap: "wrap",
@@ -884,17 +847,17 @@ const styles = {
     color: "#fff",
     padding: "10px 14px",
     textAlign: "center",
-    borderRadius: 12,
-    fontSize: 14,
+    borderRadius: 14,
+    fontSize: 15,
     fontWeight: 900,
   },
   copyBtnSmall: {
     background: "#fff",
     color: "#111827",
     border: "1px solid #d0d5dd",
-    borderRadius: 12,
+    borderRadius: 14,
     padding: "10px 14px",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 900,
   },
   sectionTitle: {
@@ -909,81 +872,100 @@ const styles = {
   },
   sectionHeadline: {
     margin: "24px 0 14px",
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 900,
     lineHeight: 1.15,
     color: "#111827",
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  headlineBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#fff6d8",
+    border: "1px solid #f4d36f",
+    fontSize: 18,
   },
   quickCard: {
-    background: "#fffef6",
-    border: "2px solid #f4d36f",
-    borderRadius: 24,
-    padding: 18,
+    background: "linear-gradient(180deg, #fffdf6 0%, #fff8dc 100%)",
+    border: "1.5px solid #f4d36f",
+    borderRadius: 22,
+    padding: 14,
     marginBottom: 16,
+    boxShadow: "0 8px 18px rgba(244,211,111,0.18)",
   },
-  quickHeadline: {
-    fontSize: 24,
+  quickTopLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 12,
+  },
+  quickIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    background: "#f6c948",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 20,
+    boxShadow: "0 8px 18px rgba(246,201,72,0.35)",
+  },
+  quickTitle: {
+    fontSize: 18,
     fontWeight: 900,
-    lineHeight: 1.2,
-    marginBottom: 14,
+    lineHeight: 1.1,
     color: "#111827",
+  },
+  quickText: {
+    fontSize: 13,
+    color: "#475467",
+    marginTop: 2,
   },
   quickGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(5, 1fr)",
-    gap: 10,
+    gap: 8,
   },
   quickBtn: {
-    minHeight: 54,
+    minHeight: 44,
     border: "none",
     borderRadius: 14,
     background: "#f6c948",
     color: "#111827",
     fontWeight: 900,
-    fontSize: 20,
-  },
-  selectedWrap: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  selectedChip: {
-    background: "#e8f7ee",
-    color: "#087443",
-    borderRadius: 999,
-    padding: "10px 12px",
-    fontWeight: 900,
-  },
-  selectedSummary: {
-    marginTop: 12,
     fontSize: 18,
-    fontWeight: 900,
   },
   numberGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 12,
+    gridTemplateColumns: "repeat(5, 1fr)",
+    gap: 8,
   },
   numberBtn: {
-    minHeight: 76,
-    borderRadius: 18,
-    border: "2px solid #d0d5dd",
+    minHeight: 50,
+    borderRadius: 14,
+    border: "1.5px solid #d0d5dd",
     background: "#fff",
     color: "#111827",
-    fontSize: 24,
+    fontSize: 16,
     fontWeight: 900,
-    boxShadow: "0 8px 18px rgba(15,23,42,0.05)",
+    boxShadow: "0 6px 14px rgba(15,23,42,0.04)",
   },
   numberUnavailable: {
     background: "#edf1f5",
     color: "#98a2b3",
-    border: "2px solid #e4e7ec",
+    border: "1.5px solid #e4e7ec",
   },
   numberActive: {
     background: "linear-gradient(135deg, #10b981, #0f8f4c)",
     color: "#fff",
-    border: "2px solid #0f8f4c",
-    boxShadow: "0 12px 22px rgba(16,185,129,0.24)",
+    border: "1.5px solid #0f8f4c",
+    boxShadow: "0 10px 18px rgba(16,185,129,0.20)",
   },
   helpText: {
     color: "#667085",
@@ -1011,14 +993,6 @@ const styles = {
     fontSize: 16,
     background: "#fff",
   },
-  resumeBox: {
-    background: "#f8fafc",
-    border: "1px solid #eaecf0",
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
-    lineHeight: 1.6,
-  },
   errorBox: {
     background: "#fef3f2",
     color: "#b42318",
@@ -1028,43 +1002,25 @@ const styles = {
     marginBottom: 12,
   },
   payBtn: {
-    width: "100%",
+    flex: 1,
     minHeight: 56,
     border: "none",
     borderRadius: 16,
     background: "#15803d",
     color: "#fff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 900,
   },
   orangeTitle: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: 900,
     color: "#d97706",
     marginBottom: 6,
-  },
-  infoCard: {
-    background: "#fff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 18,
-    padding: 16,
-  },
-  stepList: {
-    paddingLeft: 18,
-    lineHeight: 1.7,
-    color: "#344054",
-    fontSize: 18,
-    marginTop: 0,
   },
   qrImage: {
     width: "100%",
     maxWidth: 240,
     borderRadius: 16,
-  },
-  pixHeading: {
-    fontSize: 22,
-    fontWeight: 900,
-    margin: "6px 0 14px",
   },
   pixRow: {
     display: "flex",
@@ -1072,7 +1028,7 @@ const styles = {
     gap: 12,
     alignItems: "center",
     marginBottom: 12,
-    fontSize: 18,
+    fontSize: 17,
   },
   copyRow: {
     display: "grid",
@@ -1114,73 +1070,77 @@ const styles = {
     borderRadius: 18,
     background: "linear-gradient(135deg, #10b981, #0f8f4c)",
     color: "#fff",
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: 900,
     boxShadow: "0 14px 24px rgba(16,185,129,0.28)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
   },
-  floatingArrow: {
-    display: "inline-block",
-    fontSize: 20,
-    animation: "arrowFloat 1.1s ease-in-out infinite",
-  },
-  cartWrap: {
+  cartBar: {
     position: "fixed",
     left: 12,
     right: 12,
-    bottom: 14,
-    zIndex: 35,
-  },
-  cartBar: {
+    bottom: 12,
+    zIndex: 40,
     background: "#ffffff",
-    borderRadius: 22,
-    boxShadow: "0 18px 36px rgba(15,23,42,0.18)",
-    border: "1px solid #e5e7eb",
+    borderRadius: 24,
     padding: 14,
+    boxShadow: "0 16px 30px rgba(15,23,42,0.14)",
+    border: "1px solid #eef2f6",
   },
-  cartInfo: {
+  cartTopRow: {
     display: "flex",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  cartQty: {
-    fontSize: 16,
-    fontWeight: 900,
+  cartCount: {
+    fontSize: 14,
     color: "#111827",
   },
   cartTotal: {
-    fontSize: 22,
-    fontWeight: 900,
+    fontSize: 18,
     color: "#15803d",
   },
-  cartActions: {
+  cartNumbersInline: {
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap",
+    marginBottom: 12,
+    maxHeight: 70,
+    overflowY: "auto",
+  },
+  cartNumberPill: {
+    background: "#eefaf3",
+    color: "#0f8f4c",
+    border: "1px solid #b7e4c7",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontWeight: 900,
+    fontSize: 12,
+  },
+  cartActionRow: {
     display: "grid",
-    gridTemplateColumns: "1fr 1.4fr",
+    gridTemplateColumns: "1fr 1.35fr",
     gap: 10,
   },
   cartClearBtn: {
-    minHeight: 52,
+    minHeight: 50,
+    borderRadius: 16,
     border: "1px solid #d0d5dd",
     background: "#fff",
     color: "#111827",
-    borderRadius: 16,
-    fontSize: 15,
-    fontWeight: 800,
-  },
-  cartContinueBtn: {
-    minHeight: 52,
-    border: "none",
-    background: "linear-gradient(135deg, #10b981, #0f8f4c)",
-    color: "#fff",
-    borderRadius: 16,
-    fontSize: 15,
     fontWeight: 900,
-    boxShadow: "0 12px 22px rgba(16,185,129,0.24)",
+    fontSize: 16,
+  },
+  cartPayBtn: {
+    minHeight: 50,
+    borderRadius: 16,
+    border: "none",
+    background: "linear-gradient(135deg, #1db874, #149954)",
+    color: "#fff",
+    fontWeight: 900,
+    fontSize: 16,
+    boxShadow: "0 12px 22px rgba(16,185,129,0.20)",
   },
   modalOverlay: {
     position: "fixed",
@@ -1198,6 +1158,84 @@ const styles = {
     background: "#fff",
     borderRadius: 22,
     padding: 18,
+  },
+  paymentOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.52)",
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    zIndex: 120,
+  },
+  paymentSheet: {
+    width: "100%",
+    maxWidth: 620,
+    background: "#fff",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 18,
+    maxHeight: "90vh",
+    overflowY: "auto",
+    boxShadow: "0 -18px 40px rgba(0,0,0,0.18)",
+  },
+  paymentHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 14,
+  },
+  paymentTitle: {
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+  },
+  paymentSub: {
+    marginTop: 4,
+    color: "#667085",
+    fontSize: 14,
+    fontWeight: 700,
+  },
+  cartNumbersBoxModal: {
+    background: "#f8fafc",
+    border: "1px solid #eaecf0",
+    borderRadius: 18,
+    padding: 12,
+    marginBottom: 12,
+  },
+  cartNumbersLabel: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#344054",
+    marginBottom: 8,
+  },
+  cartNumberPillModal: {
+    background: "#ffffff",
+    color: "#0f8f4c",
+    border: "1px solid #ccebd8",
+    borderRadius: 999,
+    padding: "7px 11px",
+    fontWeight: 900,
+    fontSize: 12,
+  },
+  modalActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1.2fr",
+    gap: 10,
+    marginTop: 6,
+  },
+  modalGhostBtn: {
+    minHeight: 56,
+    borderRadius: 16,
+    border: "1px solid #d0d5dd",
+    background: "#fff",
+    color: "#111827",
+    fontSize: 16,
+    fontWeight: 900,
+  },
+  pixModalContent: {
+    paddingTop: 4,
   },
   modalHeader: {
     display: "flex",
@@ -1229,4 +1267,3 @@ const styles = {
     padding: 14,
   },
 };
-
