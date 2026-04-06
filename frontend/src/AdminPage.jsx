@@ -642,7 +642,7 @@ export default function AdminPage() {
       {
         nome: "Vendas externas mãe",
         whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
-        numeros: "1-150",
+        numeros: "150-300",
         status: "reservado",
         origem: "mae",
         bloco: true,
@@ -651,7 +651,7 @@ export default function AdminPage() {
       {
         nome: "Vendas externas pai",
         whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
-        numeros: "151-300",
+        numeros: "301-450",
         status: "reservado",
         origem: "pai",
         bloco: true,
@@ -660,7 +660,7 @@ export default function AdminPage() {
       {
         nome: "Vendas externas vó",
         whatsapp: onlyDigits(selectedSorteio.whatsapp || "16993537516"),
-        numeros: "301-400",
+        numeros: "451-550",
         status: "reservado",
         origem: "vo",
         bloco: true,
