@@ -1,9 +1,4 @@
-const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
-const PAGARME_API_URL = "https://api.pagar.me/core/v5";
 
-function pagarmeBasicAuth() {
-  return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
-}
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -22,6 +17,9 @@ const PORT = process.env.PORT || 3001;
  */
 const FRONTEND_URL = process.env.FRONTEND_URL || "*";
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+
+const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
+const PAGARME_API_URL = "https://api.pagar.me/core/v5";
 
 const PIX_KEY = process.env.PIX_KEY || "SEU_PIX_AQUI";
 const PIX_MERCHANT_NAME = process.env.PIX_MERCHANT_NAME || "CASA PREMIADA";
@@ -84,6 +82,10 @@ const upload = multer({
  * HELPERS
  * =========================================================
  */
+function pagarmeBasicAuth() {
+  return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
+}
+
 function ensureFoldersAndDb() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -285,6 +287,7 @@ function getSorteioDisplay(sorteio, db) {
       (r) =>
         r.sorteioId === sorteio.id &&
         r.status === "reservado" &&
+        !r.bloco &&
         !isExpired(r.expiresAt)
     )
     .flatMap((r) => r.numeros);
@@ -323,15 +326,15 @@ function getUnavailableNumbersForSorteio(sorteioId, db, ignoreReservaId = null) 
   cleanupExpiredReservations(db);
 
   const reserved = db.reservas
-  .filter(
-    (r) =>
-      r.sorteioId === sorteioId &&
-      r.status === "reservado" &&
-      !r.bloco && // 🔥 IGNORA BLOCOS
-      !isExpired(r.expiresAt) &&
-      (ignoreReservaId ? r.id !== ignoreReservaId : true)
-  )
-  .flatMap((r) => r.numeros);
+    .filter(
+      (r) =>
+        r.sorteioId === sorteioId &&
+        r.status === "reservado" &&
+        !r.bloco &&
+        !isExpired(r.expiresAt) &&
+        (ignoreReservaId ? r.id !== ignoreReservaId : true)
+    )
+    .flatMap((r) => r.numeros);
 
   const paid = db.pagamentos
     .filter((p) => p.sorteioId === sorteioId && p.status === "pago")
@@ -751,39 +754,44 @@ app.post(
 
       db.sorteios.push(sorteio);
 
-// ===== CRIAR BLOCOS AUTOMÁTICOS =====
-const criarBloco = (inicio, fim, origem, nomeBloco) => {
-  const numeros = [];
-  for (let i = inicio; i <= fim; i += 1) {
-    numeros.push(i);
-  }
+      const criarBloco = (inicio, fim, origem, nomeBloco) => {
+        if (inicio > sorteio.totalNumbers) return;
 
-  db.reservas.push({
-  id: generateId("res"),
-  sorteioId: sorteio.id,
-  clienteId: null,
-  nome: nomeBloco,
-  whatsapp: "",
-  numeros,
-  numerosTexto: `${inicio}-${fim}`,
-  total: 0,
-  valorNumero: sorteio.price,
-  status: "reservado",
-  origem,
-  bloco: true,
-  observacao: "BLOCO AUTOMÁTICO",
-  expiresAt: addMinutes(new Date(), 60 * 24 * 365).toISOString(),
-  createdAt: nowIso(),
-  updatedAt: nowIso(),
-});
+        const limiteFinal = Math.min(fim, sorteio.totalNumbers);
+        const numeros = [];
+        for (let i = inicio; i <= limiteFinal; i += 1) {
+          numeros.push(i);
+        }
 
-// SITE = 1 até 150 fica livre
+        if (!numeros.length) return;
 
-criarBloco(151, 300, "mae", "Vendas externas mãe");
-criarBloco(301, 450, "pai", "Vendas externas pai");
-criarBloco(451, 550, "vo", "Vendas externas vó");
+        db.reservas.push({
+          id: generateId("res"),
+          sorteioId: sorteio.id,
+          clienteId: null,
+          nome: nomeBloco,
+          whatsapp: "",
+          numeros,
+          numerosTexto: `${inicio}-${limiteFinal}`,
+          total: 0,
+          valorNumero: sorteio.price,
+          status: "reservado",
+          origem,
+          bloco: true,
+          observacao: "BLOCO AUTOMÁTICO",
+          expiresAt: addMinutes(new Date(), 60 * 24 * 365).toISOString(),
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        });
+      };
 
-await writeDb(db)
+      // Site: 1-150 livre
+      criarBloco(151, 300, "mae", "Vendas externas mãe");
+      criarBloco(301, 450, "pai", "Vendas externas pai");
+      criarBloco(451, 550, "vo", "Vendas externas vó");
+
+      await writeDb(db);
+
       res.status(201).json({
         success: true,
         sorteio: getSorteioDisplay(sorteio, db),
@@ -1050,125 +1058,645 @@ app.post("/api/reservas", async (req, res) => {
 
 /**
  * =========================================================
- * PIX
+ * PIX AUTOMÁTICO PAGAR.ME
  * =========================================================
  */
 app.post("/api/pix", async (req, res) => {
   try {
-    const db = await readDb();
+    let db = await readDb();
+    db = migrateDb(db);
 
-    const { nome, whatsapp, numeros, sorteioId } = req.body;
-
-    if (!nome || !whatsapp || !numeros?.length) {
-      return res.status(400).json({ error: "Dados inválidos" });
+    if (!PAGARME_SECRET_KEY) {
+      return res.status(500).json({ error: "PAGARME_SECRET_KEY não configurada." });
     }
 
-    const sorteio = db.sorteios.find(s => s.id === sorteioId);
+    const slug = String(req.body.slug || req.body.sorteioId || "").trim();
+    const nome = normalizeName(req.body.nome || "");
+    const whatsapp = normalizePhone(req.body.whatsapp || "");
+    const numeros = sanitizeReservedNumbers(req.body.numeros || []);
+
+    if (!slug) {
+      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
+    }
+
+    if (!nome) {
+      return res.status(400).json({ error: "Nome é obrigatório." });
+    }
+
+    if (whatsapp.length < 10) {
+      return res.status(400).json({ error: "WhatsApp inválido." });
+    }
+
+    if (!numeros.length) {
+      return res.status(400).json({ error: "Escolha ao menos um número." });
+    }
+
+    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
     if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado" });
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    if (sorteio.status && sorteio.status !== "ativo") {
+      return res.status(400).json({ error: "Este sorteio não está disponível." });
+    }
+
+    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
+    if (invalidMessage) {
+      return res.status(400).json({ error: invalidMessage });
     }
 
     cleanupExpiredReservations(db);
 
-    const indisponiveis = getUnavailableNumbersForSorteio(sorteioId, db);
-    const conflito = numeros.find(n => indisponiveis.includes(n));
+    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
+    const conflicts = numeros.filter((n) => unavailable.includes(n));
 
-    if (conflito) {
-      return res.status(409).json({ error: "Número já vendido" });
+    if (conflicts.length) {
+      return res.status(409).json({
+        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
+        conflicts,
+      });
     }
 
     const cliente = upsertCliente(db, { nome, whatsapp });
 
-    const reserva = {
-      id: generateId("res"),
-      sorteioId,
-      clienteId: cliente.id,
+    const reserva = createReservaRecord({
+      db,
+      sorteio,
+      cliente,
       nome,
       whatsapp,
       numeros,
-      total: numeros.length * sorteio.price,
       status: "reservado",
-      createdAt: nowIso(),
-      expiresAt: addMinutes(new Date(), 60).toISOString()
+      origem: "site",
+      bloco: false,
+      observacao: "",
+      expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
+    });
+
+    const areaCode = whatsapp.slice(0, 2);
+    const phoneNumber = whatsapp.slice(2);
+    const amount = Math.round(Number(reserva.total || 0) * 100);
+
+    const orderBody = {
+      items: [
+        {
+          amount,
+          description: `Compra de números - ${sorteio.title}`,
+          quantity: 1,
+          code: reserva.id,
+        },
+      ],
+      customer: {
+        name: nome,
+        type: "individual",
+        phones: {
+          mobile_phone: {
+            country_code: "55",
+            area_code: areaCode,
+            number: phoneNumber,
+          },
+        },
+      },
+      payments: [
+        {
+          payment_method: "pix",
+          pix: {
+            expires_in: RESERVATION_EXPIRES_MINUTES * 60,
+            additional_information: [
+              { name: "Sorteio", value: sorteio.title },
+              { name: "Números", value: numeros.join(", ") },
+            ],
+          },
+        },
+      ],
+      metadata: {
+        reserva_id: reserva.id,
+        sorteio_id: sorteio.id,
+        sorteio_slug: sorteio.slug,
+        numeros: numeros.join(","),
+      },
     };
 
-    db.reservas.push(reserva);
-
-    const amount = Math.round(reserva.total * 100);
-
-    const area = whatsapp.substring(0,2);
-    const numero = whatsapp.substring(2);
-
-    const response = await fetch(`${PAGARME_API_URL}/orders`, {
+    const pagarmeRes = await fetch(`${PAGARME_API_URL}/orders`, {
       method: "POST",
       headers: {
         Authorization: pagarmeBasicAuth(),
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        accept: "application/json",
       },
-      body: JSON.stringify({
-        items: [{
-          amount,
-          description: `Compra de números`,
-          quantity: 1,
-          code: reserva.id
-        }],
-        customer: {
-          name: nome,
-          type: "individual",
-          phones: {
-            mobile_phone: {
-              country_code: "55",
-              area_code: area,
-              number: numero
-            }
-          }
-        },
-        payments: [{
-          payment_method: "pix",
-          pix: { expires_in: 3600 }
-        }],
-        metadata: {
-          reservaId: reserva.id
-        }
-      })
+      body: JSON.stringify(orderBody),
     });
 
-    const data = await response.json();
+    const pagarmeData = await pagarmeRes.json();
 
-    if (!response.ok) {
-      return res.status(500).json({ error: "Erro Pagar.me", data });
+    if (!pagarmeRes.ok) {
+      db.reservas = db.reservas.filter((r) => r.id !== reserva.id);
+      await writeDb(db);
+
+      return res.status(500).json({
+        error: pagarmeData?.message || "Erro ao criar cobrança PIX no Pagar.me.",
+        details: pagarmeData,
+      });
     }
 
-    const charge = data.charges[0];
-    const pix = charge.last_transaction;
+    const charge = pagarmeData?.charges?.[0] || {};
+    const lastTransaction = charge?.last_transaction || {};
 
     const pagamento = {
       id: generateId("pag"),
       reservaId: reserva.id,
-      sorteioId,
+      sorteioId: sorteio.id,
+      clienteId: cliente.id,
       nome,
       whatsapp,
       numeros,
       valor: reserva.total,
+      forma: "pix",
+      provider: "pagarme",
+      providerOrderId: pagarmeData?.id || "",
+      providerChargeId: charge?.id || "",
+      providerTransactionId: lastTransaction?.id || "",
+      pixCopiaECola:
+        lastTransaction?.qr_code ||
+        lastTransaction?.qr_code_text ||
+        "",
+      qrCodeBase64: lastTransaction?.qr_code_url || "",
       status: "pendente",
-      providerOrderId: data.id,
-      providerChargeId: charge.id,
-      pix: pix.qr_code,
-      createdAt: nowIso()
+      raw: pagarmeData,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      expiresAt: reserva.expiresAt,
     };
 
     db.pagamentos.push(pagamento);
+    await writeDb(db);
+
+    return res.status(201).json({
+      success: true,
+      reservaId: reserva.id,
+      pagamentoId: pagamento.id,
+      status: pagamento.status,
+      pixCopiaECola: pagamento.pixCopiaECola,
+      pixCode: pagamento.pixCopiaECola,
+      copiaecola: pagamento.pixCopiaECola,
+      qrCodeBase64: pagamento.qrCodeBase64,
+      expirationDate: pagamento.expiresAt,
+      total: pagamento.valor,
+      providerOrderId: pagamento.providerOrderId,
+    });
+  } catch (err) {
+    console.error("Erro /api/pix:", err);
+    return res.status(500).json({ error: "Erro ao gerar PIX" });
+  }
+});
+
+/**
+ * =========================================================
+ * WEBHOOK PAGAR.ME
+ * =========================================================
+ */
+app.post("/api/webhooks/pagarme", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const event = req.body;
+    const eventType = event?.type || "";
+    const data = event?.data || {};
+
+    if (!["order.paid", "charge.paid"].includes(eventType)) {
+      return res.status(200).json({ received: true, ignored: true });
+    }
+
+    let providerOrderId = "";
+    let providerChargeId = "";
+
+    if (eventType === "order.paid") {
+      providerOrderId = data?.id || "";
+      providerChargeId = data?.charges?.[0]?.id || "";
+    }
+
+    if (eventType === "charge.paid") {
+      providerChargeId = data?.id || "";
+      providerOrderId = data?.order?.id || "";
+    }
+
+    const pagamento = db.pagamentos.find(
+      (p) =>
+        (providerOrderId && p.providerOrderId === providerOrderId) ||
+        (providerChargeId && p.providerChargeId === providerChargeId)
+    );
+
+    if (!pagamento) {
+      return res.status(200).json({ received: true, matched: false });
+    }
+
+    pagamento.status = "pago";
+    pagamento.updatedAt = nowIso();
+    pagamento.webhookPayload = event;
+
+    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+    if (reserva) {
+      reserva.status = "pago";
+      reserva.updatedAt = nowIso();
+    }
+
+    await writeDb(db);
+
+    return res.status(200).json({ received: true, matched: true });
+  } catch (error) {
+    console.error("Webhook Pagar.me:", error);
+    return res.status(500).json({ error: "Erro no webhook Pagar.me." });
+  }
+});
+
+/**
+ * =========================================================
+ * CONFIRMAÇÃO MANUAL DE PAGAMENTO
+ * =========================================================
+ */
+app.post("/api/pagamentos/:id/confirmar", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { id } = req.params;
+
+    const pagamento = db.pagamentos.find((p) => p.id === id);
+    if (!pagamento) {
+      return res.status(404).json({ error: "Pagamento não encontrado." });
+    }
+
+    pagamento.status = "pago";
+    pagamento.updatedAt = nowIso();
+
+    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+    if (reserva) {
+      reserva.status = "pago";
+      reserva.updatedAt = nowIso();
+
+      if (!reserva.bloco && !["site", "manual"].includes(String(reserva.origem || "").toLowerCase())) {
+        splitBlockIfNeeded(db, { id: reserva.sorteioId, price: reserva.valorNumero || 0 }, reserva.origem, reserva.numeros || []);
+      }
+    }
 
     await writeDb(db);
 
     res.json({
-      copiaecola: pix.qr_code,
-      qrCodeBase64: pix.qr_code_url,
-      pagamentoId: pagamento.id
+      success: true,
+      pagamento,
+    });
+  } catch {
+    res.status(500).json({ error: "Erro ao confirmar pagamento." });
+  }
+});
+
+/**
+ * =========================================================
+ * ADMIN / RESUMO
+ * =========================================================
+ */
+app.get("/api/admin/sorteios/:id/resumo", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { id } = req.params;
+
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    cleanupExpiredReservations(db);
+    await writeDb(db);
+
+    const reservas = db.reservas.filter((r) => r.sorteioId === sorteio.id);
+    const pagamentos = db.pagamentos.filter((p) => p.sorteioId === sorteio.id);
+
+    const pagos = pagamentos.filter((p) => p.status === "pago");
+    const pendentes = pagamentos.filter((p) => p.status === "pendente");
+    const reservadosAtivos = reservas.filter(
+      (r) => r.status === "reservado" && !isExpired(r.expiresAt)
+    );
+
+    const numerosPagos = [...new Set(pagos.flatMap((p) => p.numeros))];
+    const numerosReservados = [...new Set(reservadosAtivos.flatMap((r) => r.numeros))];
+
+    const arrecadado = pagos.reduce((acc, p) => acc + Number(p.valor || 0), 0);
+
+    res.json({
+      sorteio: getSorteioDisplay(sorteio, db),
+      metricas: {
+        totalNumeros: sorteio.totalNumbers,
+        vendidos: numerosPagos.length,
+        reservados: numerosReservados.length,
+        disponiveis:
+          Number(sorteio.totalNumbers) -
+          [...new Set([...numerosPagos, ...numerosReservados])].length,
+        arrecadado: Number(arrecadado.toFixed(2)),
+        pagamentosPendentes: pendentes.length,
+        pagamentosPagos: pagos.length,
+      },
+      participantes: [...reservas]
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .map((r) => ({
+          id: r.id,
+          nome: r.nome,
+          whatsapp: r.whatsapp,
+          numeros: r.numeros,
+          numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
+          total: r.total,
+          status: r.status,
+          origem: r.origem || "site",
+          bloco: Boolean(r.bloco),
+          observacao: r.observacao || "",
+          createdAt: r.createdAt,
+          expiresAt: r.expiresAt,
+        })),
+    });
+  } catch {
+    res.status(500).json({ error: "Erro ao carregar resumo do sorteio." });
+  }
+});
+
+/**
+ * =========================================================
+ * LISTAGEM DE PAGAMENTOS
+ * =========================================================
+ */
+app.get("/api/pagamentos", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const sorteioId = String(req.query.sorteioId || "").trim();
+
+    let pagamentos = db.pagamentos;
+
+    if (sorteioId) {
+      const sorteio = db.sorteios.find((s) => s.id === sorteioId || s.slug === sorteioId);
+      if (!sorteio) {
+        return res.status(404).json({ error: "Sorteio não encontrado." });
+      }
+      pagamentos = pagamentos.filter((p) => p.sorteioId === sorteio.id);
+    }
+
+    pagamentos = pagamentos.sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    res.json(pagamentos);
+  } catch {
+    res.status(500).json({ error: "Erro ao listar pagamentos." });
+  }
+});
+
+/**
+ * =========================================================
+ * EXPORTAÇÃO / LISTA PARTICIPANTES
+ * =========================================================
+ */
+app.get("/api/admin/sorteios/:id/participantes", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { id } = req.params;
+
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    cleanupExpiredReservations(db);
+    await writeDb(db);
+
+    const reservas = db.reservas
+      .filter((r) => r.sorteioId === sorteio.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json(
+      reservas.map((r) => ({
+        id: r.id,
+        nome: r.nome,
+        whatsapp: r.whatsapp,
+        numeros: r.numeros,
+        numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
+        total: r.total,
+        status: r.status,
+        origem: r.origem || "site",
+        bloco: Boolean(r.bloco),
+        observacao: r.observacao || "",
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+      }))
+    );
+  } catch {
+    res.status(500).json({ error: "Erro ao carregar participantes." });
+  }
+});
+
+/**
+ * =========================================================
+ * ADMIN / PARTICIPANTE MANUAL COM BLOCOS
+ * =========================================================
+ */
+app.post("/api/admin/sorteios/:id/participantes/manual", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { id } = req.params;
+
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    const nome = normalizeName(req.body.nome || "");
+    const whatsapp = normalizePhone(req.body.whatsapp || req.body.telefone || "");
+    const origem = String(req.body.origem || "manual").trim().toLowerCase() || "manual";
+    const bloco = Boolean(req.body.bloco);
+    const observacao = String(req.body.observacao || "").trim();
+    const status = String(req.body.status || "reservado").trim().toLowerCase() === "pago"
+      ? "pago"
+      : "reservado";
+
+    let numeros = [];
+    if (Array.isArray(req.body.numeros)) {
+      numeros = sanitizeReservedNumbers(req.body.numeros);
+    } else {
+      numeros = parseNumbersAdvanced(req.body.numeros || "");
+    }
+
+    if (!nome) {
+      return res.status(400).json({ error: "Nome é obrigatório." });
+    }
+
+    if (whatsapp.length < 8) {
+      return res.status(400).json({ error: "Telefone é obrigatório." });
+    }
+
+    if (!numeros.length) {
+      return res.status(400).json({ error: "Informe os números." });
+    }
+
+    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
+    if (invalidMessage) {
+      return res.status(400).json({ error: invalidMessage });
+    }
+
+    cleanupExpiredReservations(db);
+
+    if (!bloco && !["site", "manual"].includes(origem)) {
+      splitBlockIfNeeded(db, sorteio, origem, numeros);
+    }
+
+    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
+    const conflicts = numeros.filter((n) => unavailable.includes(n));
+
+    if (conflicts.length) {
+      return res.status(409).json({
+        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
+        conflicts,
+      });
+    }
+
+    const cliente = upsertCliente(db, { nome, whatsapp });
+
+    const expiresAt =
+      status === "reservado"
+        ? bloco
+          ? addMinutes(new Date(), 60 * 24 * 365).toISOString()
+          : addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString()
+        : null;
+
+    const reserva = createReservaRecord({
+      db,
+      sorteio,
+      cliente,
+      nome,
+      whatsapp,
+      numeros,
+      status,
+      origem,
+      bloco,
+      observacao,
+      expiresAt,
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao gerar PIX" });
+    if (status === "pago") {
+      db.pagamentos.push({
+        id: generateId("pag"),
+        reservaId: reserva.id,
+        sorteioId: sorteio.id,
+        clienteId: cliente.id,
+        nome,
+        whatsapp,
+        numeros,
+        valor: reserva.total,
+        forma: "manual",
+        pixCopiaECola: "",
+        qrCodeBase64: "",
+        status: "pago",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        expiresAt: null,
+      });
+    }
+
+    await writeDb(db);
+
+    res.status(201).json({
+      success: true,
+      reserva,
+    });
+  } catch {
+    res.status(500).json({ error: "Erro ao cadastrar participante manual." });
   }
+});
+
+app.delete("/api/admin/participantes/:id", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { id } = req.params;
+    const reserva = db.reservas.find((r) => r.id === id);
+
+    if (!reserva) {
+      return res.status(404).json({ error: "Participante não encontrado." });
+    }
+
+    db.reservas = db.reservas.filter((r) => r.id !== id);
+    db.pagamentos = db.pagamentos.filter((p) => p.reservaId !== id);
+
+    await writeDb(db);
+
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: "Erro ao excluir participante." });
+  }
+});
+
+/**
+ * =========================================================
+ * MEUS NÚMEROS
+ * =========================================================
+ */
+app.get("/api/meus-numeros/:slug", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { slug } = req.params;
+    const whatsapp = normalizePhone(req.query.whatsapp || "");
+
+    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
+
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    if (whatsapp.length < 8) {
+      return res.status(400).json({ error: "Digite seu telefone." });
+    }
+
+    const items = db.reservas.filter(
+      (r) =>
+        r.sorteioId === sorteio.id &&
+        normalizePhone(r.whatsapp) === whatsapp &&
+        r.status !== "expirado"
+    );
+
+    const numeros = [...new Set(items.flatMap((i) => i.numeros || []).map(Number))].sort(
+      (a, b) => a - b
+    );
+
+    res.json({
+      nome: items[0]?.nome || "",
+      numeros,
+    });
+  } catch {
+    res.status(500).json({ error: "Erro ao consultar." });
+  }
+});
+
+/**
+ * =========================================================
+ * FALLBACK
+ * =========================================================
+ */
+app.use((req, res) => {
+  res.status(404).json({ error: "Rota não encontrada." });
+});
+
+/**
+ * =========================================================
+ * START
+ * =========================================================
+ */
+app.listen(PORT, () => {
+  console.log(`Servidor rodando em: http://localhost:${PORT}`);
 });
