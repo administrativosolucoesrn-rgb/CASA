@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API_BASE =
+  (import.meta.env.VITE_API_URL || "http://localhost:3001").replace(/\/$/, "");
 
 const emptySorteioForm = {
   id: null,
@@ -11,8 +12,8 @@ const emptySorteioForm = {
   totalNumeros: "",
   whatsapp: "",
   status: "ativo",
-  logoUrl: "",
-  fotoPremio: "",
+  imagemFile: null,
+  imagemPreview: "",
 };
 
 const emptyParticipantForm = {
@@ -20,7 +21,6 @@ const emptyParticipantForm = {
   telefone: "",
   numeros: "",
   status: "reservado",
-  valorPago: "",
 };
 
 function onlyDigits(value = "") {
@@ -47,6 +47,18 @@ function formatDate(dateString) {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString("pt-BR");
+}
+
+function formatDateInput(dateString) {
+  if (!dateString) return "";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function parseNumbersInput(input = "") {
@@ -83,6 +95,14 @@ function downloadCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
+async function copyToClipboard(text) {
+  if (!navigator.clipboard) {
+    throw new Error("Seu navegador não permite copiar automaticamente.");
+  }
+
+  await navigator.clipboard.writeText(text);
+}
+
 export default function AdminPage() {
   const [sorteios, setSorteios] = useState([]);
   const [selectedSorteioId, setSelectedSorteioId] = useState(null);
@@ -98,9 +118,6 @@ export default function AdminPage() {
   const [loadingResumo, setLoadingResumo] = useState(false);
   const [savingSorteio, setSavingSorteio] = useState(false);
   const [savingParticipant, setSavingParticipant] = useState(false);
-
-  const [uploadingLogo, setUploadingLogo] = useState(false);
-  const [uploadingPrize, setUploadingPrize] = useState(false);
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -133,7 +150,7 @@ export default function AdminPage() {
       setLoadingSorteios(true);
       setError("");
 
-      const res = await fetch(`${API_BASE}/api/admin/sorteios`);
+      const res = await fetch(`${API_BASE}/api/sorteios`);
       const data = await safeJson(res);
 
       if (!res.ok) {
@@ -162,7 +179,9 @@ export default function AdminPage() {
       setLoadingParticipants(true);
       setError("");
 
-      const res = await fetch(`${API_BASE}/api/admin/sorteios/${sorteioId}/participantes`);
+      const res = await fetch(
+        `${API_BASE}/api/admin/sorteios/${sorteioId}/participantes`
+      );
       const data = await safeJson(res);
 
       if (!res.ok) {
@@ -171,12 +190,12 @@ export default function AdminPage() {
 
       const list = Array.isArray(data) ? data : [];
       const normalized = list.map((item, index) => ({
-        id: item.id || `${item.nome || "p"}-${item.telefone || "t"}-${index}`,
+        id: item.id || `${item.nome || "p"}-${item.whatsapp || "w"}-${index}`,
         nome: item.nome || "",
-        telefone: item.telefone || "",
+        telefone: item.whatsapp ? formatPhone(item.whatsapp) : "",
         numeros: Array.isArray(item.numeros) ? item.numeros : [],
-        status: Array.isArray(item.status) ? item.status.join(", ") : item.status || "",
-        valorPago: item.valorPago || 0,
+        status: item.status || "",
+        valorPago: item.total || 0,
         createdAt: item.createdAt || null,
       }));
 
@@ -192,8 +211,11 @@ export default function AdminPage() {
   async function loadResumo(sorteioId) {
     try {
       setLoadingResumo(true);
+      setError("");
 
-      const res = await fetch(`${API_BASE}/api/admin/sorteios/${sorteioId}/resumo`);
+      const res = await fetch(
+        `${API_BASE}/api/admin/sorteios/${sorteioId}/resumo`
+      );
       const data = await safeJson(res);
 
       if (!res.ok) {
@@ -201,7 +223,7 @@ export default function AdminPage() {
       }
 
       setResumo(data);
-    } catch {
+    } catch (err) {
       setResumo(null);
     } finally {
       setLoadingResumo(false);
@@ -221,67 +243,30 @@ export default function AdminPage() {
   }, [sorteios, selectedSorteioId]);
 
   const sorteioMetrics = useMemo(() => {
-    if (!resumo) {
-      return {
-        arrecadado: 0,
-        vendidos: 0,
-        reservados: 0,
-        disponiveis: 0,
-      };
-    }
+    const metricas = resumo?.metricas || {};
 
     return {
-      arrecadado: Number(resumo.arrecadado || 0),
-      vendidos: Number(resumo.vendidos || 0),
-      reservados: Number(resumo.reservados || 0),
-      disponiveis: Number(resumo.disponiveis || 0),
+      arrecadado: Number(metricas.arrecadado || 0),
+      vendidos: Number(metricas.vendidos || 0),
+      reservados: Number(metricas.reservados || 0),
+      disponiveis: Number(metricas.disponiveis || 0),
     };
   }, [resumo]);
 
-  async function uploadFile(file) {
-    const formData = new FormData();
-    formData.append("imagem", file);
-
-    const res = await fetch(`${API_BASE}/api/upload`, {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await safeJson(res);
-
-    if (!res.ok) {
-      throw new Error(data?.error || "Erro ao enviar imagem.");
-    }
-
-    return data.url;
-  }
-
-  async function handleImageUpload(event, field) {
-    const file = event.target.files?.[0];
+  function handleImageFileChange(event) {
+    const file = event.target.files?.[0] || null;
     if (!file) return;
 
-    setMessage("");
+    const preview = URL.createObjectURL(file);
+
+    setSorteioForm((prev) => ({
+      ...prev,
+      imagemFile: file,
+      imagemPreview: preview,
+    }));
+
+    setMessage("Imagem selecionada com sucesso.");
     setError("");
-
-    try {
-      if (field === "logoUrl") setUploadingLogo(true);
-      if (field === "fotoPremio") setUploadingPrize(true);
-
-      const url = await uploadFile(file);
-
-      setSorteioForm((prev) => ({
-        ...prev,
-        [field]: url,
-      }));
-
-      setMessage("Imagem enviada com sucesso.");
-    } catch (err) {
-      setError(err.message || "Erro ao enviar imagem.");
-    } finally {
-      if (field === "logoUrl") setUploadingLogo(false);
-      if (field === "fotoPremio") setUploadingPrize(false);
-      event.target.value = "";
-    }
   }
 
   function handleSorteioChange(field, value) {
@@ -322,30 +307,28 @@ export default function AdminPage() {
       setMessage("");
       setError("");
 
-      const payload = {
-        titulo: sorteioForm.titulo.trim(),
-        descricao: sorteioForm.descricao.trim(),
-        dataSorteio: sorteioForm.dataSorteio,
-        valorNumero: Number(sorteioForm.valorNumero || 0),
-        totalNumeros: Number(sorteioForm.totalNumeros || 0),
-        whatsapp: onlyDigits(sorteioForm.whatsapp),
-        status: sorteioForm.status,
-        logoUrl: sorteioForm.logoUrl,
-        fotoPremio: sorteioForm.fotoPremio,
-      };
+      const formData = new FormData();
+      formData.append("titulo", sorteioForm.titulo.trim());
+      formData.append("descricao", sorteioForm.descricao.trim());
+      formData.append("dataSorteio", sorteioForm.dataSorteio || "");
+      formData.append("valor", Number(sorteioForm.valorNumero || 0));
+      formData.append("totalNumbers", Number(sorteioForm.totalNumeros || 0));
+      formData.append("whatsapp", onlyDigits(sorteioForm.whatsapp));
+      formData.append("status", sorteioForm.status);
+
+      if (sorteioForm.imagemFile) {
+        formData.append("image", sorteioForm.imagemFile);
+      }
 
       const isEdit = Boolean(sorteioForm.id);
 
       const res = await fetch(
         isEdit
-          ? `${API_BASE}/api/admin/sorteios/${sorteioForm.id}`
-          : `${API_BASE}/api/admin/sorteios`,
+          ? `${API_BASE}/api/sorteios/${sorteioForm.id}`
+          : `${API_BASE}/api/sorteios`,
         {
           method: isEdit ? "PUT" : "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
+          body: formData,
         }
       );
 
@@ -355,14 +338,19 @@ export default function AdminPage() {
         throw new Error(data?.error || "Erro ao salvar sorteio.");
       }
 
-      setMessage(isEdit ? "Sorteio atualizado com sucesso." : "Sorteio criado com sucesso.");
+      const sorteioSalvo = data?.sorteio || null;
+
+      setMessage(
+        isEdit ? "Sorteio atualizado com sucesso." : "Sorteio criado com sucesso."
+      );
+
       resetSorteioForm();
       await loadSorteios();
 
-      if (data?.id) {
-        setSelectedSorteioId(data.id);
-        await loadResumo(data.id);
-        await loadParticipants(data.id);
+      if (sorteioSalvo?.id) {
+        setSelectedSorteioId(sorteioSalvo.id);
+        await loadResumo(sorteioSalvo.id);
+        await loadParticipants(sorteioSalvo.id);
       }
     } catch (err) {
       setError(err.message || "Erro ao salvar sorteio.");
@@ -374,15 +362,15 @@ export default function AdminPage() {
   function handleEditSorteio(sorteio) {
     setSorteioForm({
       id: sorteio.id || null,
-      titulo: sorteio.titulo || "",
+      titulo: sorteio.title || "",
       descricao: sorteio.descricao || "",
-      dataSorteio: sorteio.dataSorteio ? String(sorteio.dataSorteio).slice(0, 16) : "",
-      valorNumero: sorteio.valorNumero || "",
-      totalNumeros: sorteio.totalNumeros || "",
+      dataSorteio: formatDateInput(sorteio.drawDate),
+      valorNumero: sorteio.price || "",
+      totalNumeros: sorteio.totalNumbers || "",
       whatsapp: formatPhone(sorteio.whatsapp || ""),
       status: sorteio.status || "ativo",
-      logoUrl: sorteio.logoUrl || "",
-      fotoPremio: sorteio.fotoPremio || "",
+      imagemFile: null,
+      imagemPreview: sorteio.image || "",
     });
 
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -396,7 +384,7 @@ export default function AdminPage() {
       setError("");
       setMessage("");
 
-      const res = await fetch(`${API_BASE}/api/admin/sorteios/${id}`, {
+      const res = await fetch(`${API_BASE}/api/sorteios/${id}`, {
         method: "DELETE",
       });
 
@@ -425,7 +413,7 @@ export default function AdminPage() {
     e.preventDefault();
 
     if (!selectedSorteio) {
-      setError("Selecione um sorteio antes de cadastrar participante.");
+      setError("Selecione um sorteio.");
       return;
     }
 
@@ -434,56 +422,70 @@ export default function AdminPage() {
       setError("");
       setMessage("");
 
-      const parsedNumbers = parseNumbersInput(participantForm.numeros);
+      const numeros = parseNumbersInput(participantForm.numeros);
+      const nome = participantForm.nome.trim();
+      const whatsapp = onlyDigits(participantForm.telefone);
+      const slug = selectedSorteio.slug || selectedSorteio.id;
 
-      if (!participantForm.nome.trim()) {
+      if (!nome) {
         throw new Error("Nome é obrigatório.");
       }
 
-      if (!participantForm.telefone.trim()) {
+      if (!whatsapp) {
         throw new Error("Telefone é obrigatório.");
       }
 
-      if (!parsedNumbers.length) {
-        throw new Error("Informe pelo menos um número.");
+      if (!numeros.length) {
+        throw new Error("Informe os números.");
       }
 
-      const payload = {
-        nome: participantForm.nome.trim(),
-        telefone: onlyDigits(participantForm.telefone),
-        numeros: parsedNumbers,
-        status: participantForm.status,
-        valorPago:
-          participantForm.valorPago !== ""
-            ? Number(participantForm.valorPago)
-            : parsedNumbers.length * Number(selectedSorteio.valorNumero || 0),
-      };
-
-      const res = await fetch(
-        `${API_BASE}/api/public/sorteios/${selectedSorteio.id}/reservar`,
-        {
+      if (participantForm.status === "reservado") {
+        const res = await fetch(`${API_BASE}/api/reservas`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            nome: payload.nome,
-            telefone: payload.telefone,
-            numeros: payload.numeros,
+            slug,
+            nome,
+            whatsapp,
+            numeros,
           }),
+        });
+
+        const data = await safeJson(res);
+
+        if (!res.ok) {
+          throw new Error(data?.error || "Erro ao reservar.");
         }
-      );
+      }
 
-      const data = await safeJson(res);
+      if (participantForm.status === "pago") {
+        const res = await fetch(`${API_BASE}/api/pix`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug,
+            nome,
+            whatsapp,
+            numeros,
+          }),
+        });
 
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao cadastrar participante.");
+        const data = await safeJson(res);
+
+        if (!res.ok) {
+          throw new Error(data?.error || "Erro no PIX.");
+        }
+
+        if (data?.pagamentoId) {
+          await fetch(`${API_BASE}/api/pagamentos/${data.pagamentoId}/confirmar`, {
+            method: "POST",
+          });
+        }
       }
 
       setMessage("Participante cadastrado com sucesso.");
       resetParticipantForm();
       await loadParticipants(selectedSorteio.id);
-      await loadSorteios();
       await loadResumo(selectedSorteio.id);
     } catch (err) {
       setError(err.message || "Erro ao cadastrar participante.");
@@ -495,35 +497,44 @@ export default function AdminPage() {
   async function handleCopyLink() {
     if (!selectedSorteio) return;
 
-    const link = `${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`;
+    const link = `${window.location.origin}/#/sorteio/${
+      selectedSorteio.slug || selectedSorteio.id
+    }`;
 
     try {
-      await navigator.clipboard.writeText(link);
+      await copyToClipboard(link);
       setMessage("Link copiado com sucesso.");
-    } catch {
-      setError("Não foi possível copiar o link.");
+      setError("");
+    } catch (err) {
+      setError(err.message || "Não foi possível copiar o link.");
     }
   }
 
   async function handleShare() {
     if (!selectedSorteio) return;
 
-    const link = `${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`;
+    const link = `${window.location.origin}/#/sorteio/${
+      selectedSorteio.slug || selectedSorteio.id
+    }`;
 
     try {
       if (navigator.share) {
         await navigator.share({
-          title: selectedSorteio.titulo,
-          text: `Participe do sorteio ${selectedSorteio.titulo}`,
+          title: selectedSorteio.title || "Sorteio",
+          text: `Participe do sorteio ${selectedSorteio.title || ""}`,
           url: link,
         });
         setMessage("Link compartilhado com sucesso.");
+        setError("");
       } else {
-        await navigator.clipboard.writeText(link);
+        await copyToClipboard(link);
         setMessage("Compartilhamento não disponível. Link copiado.");
+        setError("");
       }
-    } catch {
-      //
+    } catch (err) {
+      if (err?.name !== "AbortError") {
+        setError("Não foi possível compartilhar agora.");
+      }
     }
   }
 
@@ -531,16 +542,18 @@ export default function AdminPage() {
     if (!selectedSorteio) return;
 
     const rows = [
-      ["Nome", "Telefone", "Números Comprados", "Status"],
+      ["Nome", "Telefone", "Números Comprados", "Status", "Total", "Criado em"],
       ...participants.map((p) => [
         p.nome || "",
         p.telefone || "",
         Array.isArray(p.numeros) ? p.numeros.join(", ") : "",
         p.status || "",
+        p.valorPago || "",
+        p.createdAt ? formatDate(p.createdAt) : "",
       ]),
     ];
 
-    const safeName = (selectedSorteio.titulo || "participantes")
+    const safeName = (selectedSorteio.title || "participantes")
       .toLowerCase()
       .replace(/\s+/g, "-");
 
@@ -657,28 +670,14 @@ export default function AdminPage() {
               </div>
 
               <div style={styles.uploadArea}>
-                <label style={styles.label}>Logo</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleImageUpload(e, "logoUrl")}
-                />
-                {uploadingLogo ? <small>Enviando logo...</small> : null}
-                {sorteioForm.logoUrl ? (
-                  <img src={sorteioForm.logoUrl} alt="Logo" style={styles.previewSmall} />
-                ) : null}
-              </div>
-
-              <div style={styles.uploadArea}>
                 <label style={styles.label}>Foto do prêmio</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handleImageUpload(e, "fotoPremio")}
-                />
-                {uploadingPrize ? <small>Enviando foto do prêmio...</small> : null}
-                {sorteioForm.fotoPremio ? (
-                  <img src={sorteioForm.fotoPremio} alt="Prêmio" style={styles.previewLarge} />
+                <input type="file" accept="image/*" onChange={handleImageFileChange} />
+                {sorteioForm.imagemPreview ? (
+                  <img
+                    src={sorteioForm.imagemPreview}
+                    alt="Prêmio"
+                    style={styles.previewLarge}
+                  />
                 ) : null}
               </div>
 
@@ -725,18 +724,18 @@ export default function AdminPage() {
                         onClick={() => setSelectedSorteioId(sorteio.id)}
                       >
                         <div style={styles.listItemTitleRow}>
-                          <strong>{sorteio.titulo}</strong>
+                          <strong>{sorteio.title}</strong>
                           <span style={styles.badge}>{sorteio.status}</span>
                         </div>
 
                         <div style={styles.metaText}>
-                          Valor: {currencyBRL(sorteio.valorNumero)}
+                          Valor: {currencyBRL(sorteio.price)}
                         </div>
                         <div style={styles.metaText}>
-                          Números: {sorteio.totalNumeros || 0}
+                          Números: {sorteio.totalNumbers || 0}
                         </div>
                         <div style={styles.metaText}>
-                          Sorteio: {formatDate(sorteio.dataSorteio)}
+                          Sorteio: {formatDate(sorteio.drawDate)}
                         </div>
                       </div>
 
@@ -748,19 +747,24 @@ export default function AdminPage() {
                         >
                           Editar
                         </button>
+
                         <button
                           type="button"
                           style={styles.smallButton}
                           onClick={async () => {
                             setSelectedSorteioId(sorteio.id);
-                            await navigator.clipboard.writeText(
-                              `${window.location.origin}/#/sorteio/${sorteio.slug || sorteio.id}`
+                            await copyToClipboard(
+                              `${window.location.origin}/#/sorteio/${
+                                sorteio.slug || sorteio.id
+                              }`
                             );
                             setMessage("Link copiado.");
+                            setError("");
                           }}
                         >
                           Link
                         </button>
+
                         <button
                           type="button"
                           style={styles.smallDangerButton}
@@ -829,7 +833,9 @@ export default function AdminPage() {
               <input
                 readOnly
                 style={styles.input}
-                value={`${window.location.origin}/#/sorteio/${selectedSorteio.slug || selectedSorteio.id}`}
+                value={`${window.location.origin}/#/sorteio/${
+                  selectedSorteio.slug || selectedSorteio.id
+                }`}
               />
             </section>
 
@@ -861,47 +867,33 @@ export default function AdminPage() {
                   </div>
 
                   <div style={styles.field}>
-                    <label style={styles.label}>Números comprados</label>
+                    <label style={styles.label}>Números</label>
                     <input
                       style={styles.input}
                       value={participantForm.numeros}
                       onChange={(e) => handleParticipantChange("numeros", e.target.value)}
-                      placeholder="Ex: 1, 8, 15, 44"
+                      placeholder="Ex: 1, 5, 10"
                       required
                     />
-                    <small style={styles.helpText}>
-                      Separe por vírgula, espaço ou ponto e vírgula.
-                    </small>
                   </div>
 
-                  <div style={styles.twoCols}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Status</label>
-                      <select
-                        style={styles.input}
-                        value={participantForm.status}
-                        onChange={(e) => handleParticipantChange("status", e.target.value)}
-                      >
-                        <option value="reservado">Reservado</option>
-                        <option value="pago">Pago</option>
-                      </select>
-                    </div>
-
-                    <div style={styles.field}>
-                      <label style={styles.label}>Valor pago</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        style={styles.input}
-                        value={participantForm.valorPago}
-                        onChange={(e) => handleParticipantChange("valorPago", e.target.value)}
-                        placeholder="Automático se vazio"
-                      />
-                    </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Status</label>
+                    <select
+                      style={styles.input}
+                      value={participantForm.status}
+                      onChange={(e) => handleParticipantChange("status", e.target.value)}
+                    >
+                      <option value="reservado">Reservado</option>
+                      <option value="pago">Pago</option>
+                    </select>
                   </div>
 
-                  <button type="submit" style={styles.greenButton} disabled={savingParticipant}>
+                  <button
+                    type="submit"
+                    style={styles.greenButton}
+                    disabled={savingParticipant}
+                  >
                     {savingParticipant ? "Salvando..." : "Cadastrar participante"}
                   </button>
                 </form>
@@ -911,7 +903,7 @@ export default function AdminPage() {
                 <div style={styles.sectionHeader}>
                   <div>
                     <h2 style={styles.cardTitle}>Participantes</h2>
-                    <p style={styles.subtitle2}>Nome, telefone, números e status</p>
+                    <p style={styles.subtitle2}>Lista de compradores</p>
                   </div>
 
                   <button style={styles.greenButton} onClick={handleExportParticipants}>
@@ -920,9 +912,9 @@ export default function AdminPage() {
                 </div>
 
                 {loadingParticipants ? (
-                  <p>Carregando participantes...</p>
+                  <p>Carregando...</p>
                 ) : participants.length === 0 ? (
-                  <p>Nenhum participante neste sorteio.</p>
+                  <p>Nenhum participante.</p>
                 ) : (
                   <div style={styles.tableWrapper}>
                     <table style={styles.table}>
@@ -935,16 +927,12 @@ export default function AdminPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {participants.map((participant) => (
-                          <tr key={participant.id}>
-                            <td style={styles.td}>{participant.nome || "-"}</td>
-                            <td style={styles.td}>{participant.telefone || "-"}</td>
-                            <td style={styles.td}>
-                              {Array.isArray(participant.numeros)
-                                ? participant.numeros.join(", ")
-                                : "-"}
-                            </td>
-                            <td style={styles.td}>{participant.status || "-"}</td>
+                        {participants.map((p) => (
+                          <tr key={p.id}>
+                            <td style={styles.td}>{p.nome}</td>
+                            <td style={styles.td}>{p.telefone}</td>
+                            <td style={styles.td}>{p.numeros?.join(", ")}</td>
+                            <td style={styles.td}>{p.status}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1103,13 +1091,6 @@ const styles = {
     flexDirection: "column",
     gap: "8px",
   },
-  previewSmall: {
-    width: "110px",
-    height: "110px",
-    objectFit: "cover",
-    borderRadius: "14px",
-    border: "1px solid #e5e7eb",
-  },
   previewLarge: {
     width: "100%",
     maxWidth: "280px",
@@ -1241,929 +1222,4 @@ const styles = {
     fontSize: "14px",
     verticalAlign: "top",
   },
-  helpText: {
-    color: "#6b7280",
-    fontSize: "12px",
-  },
 };
-  if (!navigator.clipboard) {
-    throw new Error("Seu navegador não permite copiar automaticamente.");
-  }
-
-  await navigator.clipboard.writeText(text);
-}
-
-export default function AdminPage() {
-  const [sorteios, setSorteios] = useState([]);
-  const [selectedSorteioId, setSelectedSorteioId] = useState(null);
-
-  const [sorteioForm, setSorteioForm] = useState(emptySorteioForm);
-  const [participantForm, setParticipantForm] = useState(emptyParticipantForm);
-
-  const [participants, setParticipants] = useState([]);
-  const [resumo, setResumo] = useState(null);
-
-  const [loadingSorteios, setLoadingSorteios] = useState(false);
-  const [loadingParticipants, setLoadingParticipants] = useState(false);
-  const [loadingResumo, setLoadingResumo] = useState(false);
-  const [savingSorteio, setSavingSorteio] = useState(false);
-  const [savingParticipant, setSavingParticipant] = useState(false);
-
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    loadSorteios();
-  }, []);
-
-  useEffect(() => {
-    if (selectedSorteioId) {
-      loadParticipants(selectedSorteioId);
-      loadResumo(selectedSorteioId);
-    } else {
-      setParticipants([]);
-      setResumo(null);
-    }
-  }, [selectedSorteioId]);
-
-  async function safeJson(res) {
-    const text = await res.text();
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch {
-      return {};
-    }
-  }
-
-  async function loadSorteios() {
-    try {
-      setLoadingSorteios(true);
-      setError("");
-
-      const res = await fetch(`${API_BASE}/api/sorteios`);
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao carregar sorteios.");
-      }
-
-      const list = Array.isArray(data) ? data : [];
-      setSorteios(list);
-
-      if (list.length && !selectedSorteioId) {
-        setSelectedSorteioId(list[0].id);
-      }
-
-      if (!list.length) {
-        setSelectedSorteioId(null);
-      }
-    } catch (err) {
-      setError(err.message || "Erro ao carregar sorteios.");
-    } finally {
-      setLoadingSorteios(false);
-    }
-  }
-
-  async function loadParticipants(sorteioId) {
-    try {
-      setLoadingParticipants(true);
-      setError("");
-
-      const res = await fetch(
-        `${API_BASE}/api/admin/sorteios/${sorteioId}/participantes`
-      );
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao carregar participantes.");
-      }
-
-      const list = Array.isArray(data) ? data : [];
-      const normalized = list.map((item, index) => ({
-        id: item.id || `${item.nome || "p"}-${item.whatsapp || "w"}-${index}`,
-        nome: item.nome || "",
-        telefone: item.whatsapp || "",
-        numeros: Array.isArray(item.numeros) ? item.numeros : [],
-        status: item.status || "",
-        valorPago: item.total || 0,
-        createdAt: item.createdAt || null,
-      }));
-
-      setParticipants(normalized);
-    } catch (err) {
-      setError(err.message || "Erro ao carregar participantes.");
-      setParticipants([]);
-    } finally {
-      setLoadingParticipants(false);
-    }
-  }
-
-  async function loadResumo(sorteioId) {
-    try {
-      setLoadingResumo(true);
-      setError("");
-
-      const res = await fetch(
-        `${API_BASE}/api/admin/sorteios/${sorteioId}/resumo`
-      );
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao carregar resumo.");
-      }
-
-      setResumo(data);
-    } catch (err) {
-      setResumo(null);
-    } finally {
-      setLoadingResumo(false);
-    }
-  }
-
-  function resetSorteioForm() {
-    setSorteioForm(emptySorteioForm);
-  }
-
-  function resetParticipantForm() {
-    setParticipantForm(emptyParticipantForm);
-  }
-
-  const selectedSorteio = useMemo(() => {
-    return sorteios.find((item) => item.id === selectedSorteioId) || null;
-  }, [sorteios, selectedSorteioId]);
-
-  const sorteioMetrics = useMemo(() => {
-    const metricas = resumo?.metricas || {};
-
-    return {
-      arrecadado: Number(metricas.arrecadado || 0),
-      vendidos: Number(metricas.vendidos || 0),
-      reservados: Number(metricas.reservados || 0),
-      disponiveis: Number(metricas.disponiveis || 0),
-    };
-  }, [resumo]);
-
-  function handleImageFileChange(event) {
-    const file = event.target.files?.[0] || null;
-    if (!file) return;
-
-    const preview = URL.createObjectURL(file);
-
-    setSorteioForm((prev) => ({
-      ...prev,
-      imagemFile: file,
-      imagemPreview: preview,
-    }));
-
-    setMessage("Imagem selecionada com sucesso.");
-    setError("");
-  }
-
-  function handleSorteioChange(field, value) {
-    if (field === "whatsapp") {
-      setSorteioForm((prev) => ({
-        ...prev,
-        whatsapp: formatPhone(value),
-      }));
-      return;
-    }
-
-    setSorteioForm((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
-  }
-
-  function handleParticipantChange(field, value) {
-    if (field === "telefone") {
-      setParticipantForm((prev) => ({
-        ...prev,
-        telefone: formatPhone(value),
-      }));
-      return;
-    }
-
-    setParticipantForm((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
-  }
-  async function handleSaveSorteio(e) {
-    e.preventDefault();
-
-    try {
-      setSavingSorteio(true);
-      setMessage("");
-      setError("");
-
-      const payload = {
-        title: sorteioForm.titulo.trim(),
-        description: sorteioForm.descricao.trim(),
-        drawDate: sorteioForm.dataSorteio
-          ? new Date(sorteioForm.dataSorteio).toISOString()
-          : null,
-        price: Number(sorteioForm.valorNumero || 0),
-        totalNumbers: Number(sorteioForm.totalNumeros || 0),
-        whatsapp: onlyDigits(sorteioForm.whatsapp),
-        status: sorteioForm.status,
-      };
-
-      let res;
-      let data;
-
-      // CRIAR
-      if (!sorteioForm.id) {
-        const formData = new FormData();
-
-        Object.entries(payload).forEach(([key, value]) => {
-          formData.append(key, value ?? "");
-        });
-
-        if (sorteioForm.imagemFile) {
-          formData.append("image", sorteioForm.imagemFile);
-        }
-
-        res = await fetch(`${API_BASE}/api/sorteios`, {
-          method: "POST",
-          body: formData,
-        });
-      } else {
-        // EDITAR
-        res = await fetch(`${API_BASE}/api/sorteios/${sorteioForm.id}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-      }
-
-      data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao salvar sorteio.");
-      }
-
-      setMessage(
-        sorteioForm.id
-          ? "Sorteio atualizado com sucesso."
-          : "Sorteio criado com sucesso."
-      );
-
-      resetSorteioForm();
-      await loadSorteios();
-
-      if (data?.id) {
-        setSelectedSorteioId(data.id);
-        await loadResumo(data.id);
-        await loadParticipants(data.id);
-      }
-    } catch (err) {
-      setError(err.message || "Erro ao salvar sorteio.");
-    } finally {
-      setSavingSorteio(false);
-    }
-  }
-
-  function handleEditSorteio(sorteio) {
-    setSorteioForm({
-      id: sorteio.id || null,
-      titulo: sorteio.title || "",
-      descricao: sorteio.description || "",
-      dataSorteio: formatDateInput(sorteio.drawDate),
-      valorNumero: sorteio.price || "",
-      totalNumeros: sorteio.totalNumbers || "",
-      whatsapp: formatPhone(sorteio.whatsapp || ""),
-      status: sorteio.status || "ativo",
-      imagemFile: null,
-      imagemPreview: sorteio.image || "",
-    });
-
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  async function handleDeleteSorteio(id) {
-    const confirmed = window.confirm("Deseja realmente excluir este sorteio?");
-    if (!confirmed) return;
-
-    try {
-      setError("");
-      setMessage("");
-
-      const res = await fetch(`${API_BASE}/api/sorteios/${id}`, {
-        method: "DELETE",
-      });
-
-      const data = await safeJson(res);
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Erro ao excluir sorteio.");
-      }
-
-      setMessage("Sorteio excluído com sucesso.");
-
-      if (selectedSorteioId === id) {
-        setSelectedSorteioId(null);
-      }
-
-      await loadSorteios();
-      resetSorteioForm();
-      setParticipants([]);
-      setResumo(null);
-    } catch (err) {
-      setError(err.message || "Erro ao excluir sorteio.");
-    }
-  }
-
-  async function handleSaveParticipant(e) {
-    e.preventDefault();
-
-    if (!selectedSorteio) {
-      setError("Selecione um sorteio.");
-      return;
-    }
-
-    try {
-      setSavingParticipant(true);
-      setError("");
-      setMessage("");
-
-      const numeros = parseNumbersInput(participantForm.numeros);
-
-      if (!numeros.length) {
-        throw new Error("Informe os números.");
-      }
-
-      // RESERVADO
-      if (participantForm.status === "reservado") {
-        const res = await fetch(`${API_BASE}/api/reservas`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sorteioId: selectedSorteio.id,
-            numeros,
-            nome: participantForm.nome,
-            telefone: onlyDigits(participantForm.telefone),
-          }),
-        });
-
-        const data = await safeJson(res);
-
-        if (!res.ok) {
-          throw new Error(data?.error || "Erro ao reservar.");
-        }
-      }
-
-      // PAGO (PIX AUTOMÁTICO)
-      if (participantForm.status === "pago") {
-        const res = await fetch(`${API_BASE}/api/pix`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sorteioId: selectedSorteio.id,
-            numeros,
-            nome: participantForm.nome,
-            telefone: onlyDigits(participantForm.telefone),
-          }),
-        });
-
-        const data = await safeJson(res);
-
-        if (!res.ok) {
-          throw new Error(data?.error || "Erro no PIX.");
-        }
-
-        // CONFIRMA AUTOMÁTICO
-        if (data?.pagamentoId) {
-          await fetch(
-            `${API_BASE}/api/pagamentos/${data.pagamentoId}/confirmar`,
-            { method: "POST" }
-          );
-        }
-      }
-
-      setMessage("Participante cadastrado com sucesso.");
-      resetParticipantForm();
-      await loadParticipants(selectedSorteio.id);
-      await loadResumo(selectedSorteio.id);
-    } catch (err) {
-      setError(err.message || "Erro ao cadastrar participante.");
-    } finally {
-      setSavingParticipant(false);
-    }
-  }
-  async function handleCopyLink() {
-    if (!selectedSorteio) return;
-
-    const link = `${window.location.origin}/#/sorteio/${
-      selectedSorteio.slug || selectedSorteio.id
-    }`;
-
-    try {
-      await copyToClipboard(link);
-      setMessage("Link copiado com sucesso.");
-      setError("");
-    } catch (err) {
-      setError(err.message || "Não foi possível copiar o link.");
-    }
-  }
-
-  async function handleShare() {
-    if (!selectedSorteio) return;
-
-    const link = `${window.location.origin}/#/sorteio/${
-      selectedSorteio.slug || selectedSorteio.id
-    }`;
-
-    try {
-      if (navigator.share) {
-        await navigator.share({
-          title: selectedSorteio.title || "Sorteio",
-          text: `Participe do sorteio ${selectedSorteio.title || ""}`,
-          url: link,
-        });
-        setMessage("Link compartilhado com sucesso.");
-        setError("");
-      } else {
-        await copyToClipboard(link);
-        setMessage("Compartilhamento não disponível. Link copiado.");
-        setError("");
-      }
-    } catch (err) {
-      if (err?.name !== "AbortError") {
-        setError("Não foi possível compartilhar agora.");
-      }
-    }
-  }
-
-  function handleExportParticipants() {
-    if (!selectedSorteio) return;
-
-    const rows = [
-      ["Nome", "Telefone", "Números Comprados", "Status", "Total", "Criado em"],
-      ...participants.map((p) => [
-        p.nome || "",
-        p.telefone || "",
-        Array.isArray(p.numeros) ? p.numeros.join(", ") : "",
-        p.status || "",
-        p.valorPago || "",
-        p.createdAt ? formatDate(p.createdAt) : "",
-      ]),
-    ];
-
-    const safeName = (selectedSorteio.title || "participantes")
-      .toLowerCase()
-      .replace(/\s+/g, "-");
-
-    downloadCSV(`${safeName}-participantes.csv`, rows);
-  }
-
-  return (
-    <div style={styles.page}>
-      <div style={styles.container}>
-        <header style={styles.header}>
-          <div>
-            <h1 style={styles.title}>Painel Administrativo</h1>
-            <p style={styles.subtitle}>Casa Premiada Ribeirão</p>
-          </div>
-
-          <button style={styles.darkButton} onClick={resetSorteioForm}>
-            + Novo sorteio
-          </button>
-        </header>
-
-        {error ? <div style={styles.errorBox}>{error}</div> : null}
-        {message ? <div style={styles.successBox}>{message}</div> : null}
-
-        <section style={styles.mainGrid}>
-          <div style={styles.card}>
-            <h2 style={styles.cardTitle}>
-              {sorteioForm.id ? "Editar sorteio" : "Criar sorteio"}
-            </h2>
-
-            <form onSubmit={handleSaveSorteio} style={styles.form}>
-              <div style={styles.field}>
-                <label style={styles.label}>Título</label>
-                <input
-                  style={styles.input}
-                  value={sorteioForm.titulo}
-                  onChange={(e) => handleSorteioChange("titulo", e.target.value)}
-                  placeholder="Ex: Casa Premiada Ribeirão"
-                  required
-                />
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Descrição</label>
-                <textarea
-                  style={styles.textarea}
-                  value={sorteioForm.descricao}
-                  onChange={(e) =>
-                    handleSorteioChange("descricao", e.target.value)
-                  }
-                  placeholder="Descreva o prêmio e regras"
-                  rows={4}
-                />
-              </div>
-
-              <div style={styles.twoCols}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Data do sorteio</label>
-                  <input
-                    type="datetime-local"
-                    style={styles.input}
-                    value={sorteioForm.dataSorteio}
-                    onChange={(e) =>
-                      handleSorteioChange("dataSorteio", e.target.value)
-                    }
-                  />
-                </div>
-
-                <div style={styles.field}>
-                  <label style={styles.label}>WhatsApp</label>
-                  <input
-                    style={styles.input}
-                    value={sorteioForm.whatsapp}
-                    onChange={(e) =>
-                      handleSorteioChange("whatsapp", e.target.value)
-                    }
-                    placeholder="(16) 99999-9999"
-                  />
-                </div>
-              </div>
-
-              <div style={styles.twoCols}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Valor por número</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    style={styles.input}
-                    value={sorteioForm.valorNumero}
-                    onChange={(e) =>
-                      handleSorteioChange("valorNumero", e.target.value)
-                    }
-                    placeholder="2.00"
-                    required
-                  />
-                </div>
-
-                <div style={styles.field}>
-                  <label style={styles.label}>Quantidade de números</label>
-                  <input
-                    type="number"
-                    min="1"
-                    style={styles.input}
-                    value={sorteioForm.totalNumeros}
-                    onChange={(e) =>
-                      handleSorteioChange("totalNumeros", e.target.value)
-                    }
-                    placeholder="300"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div style={styles.field}>
-                <label style={styles.label}>Status</label>
-                <select
-                  style={styles.input}
-                  value={sorteioForm.status}
-                  onChange={(e) => handleSorteioChange("status", e.target.value)}
-                >
-                  <option value="ativo">Ativo</option>
-                  <option value="inativo">Inativo</option>
-                </select>
-              </div>
-
-              <div style={styles.uploadArea}>
-                <label style={styles.label}>Foto do prêmio</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageFileChange}
-                />
-                {sorteioForm.imagemPreview ? (
-                  <img
-                    src={sorteioForm.imagemPreview}
-                    alt="Prêmio"
-                    style={styles.previewLarge}
-                  />
-                ) : null}
-              </div>
-
-              <div style={styles.actions}>
-                <button
-                  type="submit"
-                  style={styles.greenButton}
-                  disabled={savingSorteio}
-                >
-                  {savingSorteio
-                    ? "Salvando..."
-                    : sorteioForm.id
-                    ? "Atualizar sorteio"
-                    : "Criar sorteio"}
-                </button>
-
-                {sorteioForm.id ? (
-                  <button
-                    type="button"
-                    style={styles.grayButton}
-                    onClick={resetSorteioForm}
-                  >
-                    Cancelar edição
-                  </button>
-                ) : null}
-              </div>
-            </form>
-          </div>
-
-          <div style={styles.card}>
-            <h2 style={styles.cardTitle}>Sorteios cadastrados</h2>
-
-            {loadingSorteios ? (
-              <p>Carregando sorteios...</p>
-            ) : sorteios.length === 0 ? (
-              <p>Nenhum sorteio cadastrado.</p>
-            ) : (
-              <div style={styles.list}>
-                {sorteios.map((sorteio) => {
-                  const active = selectedSorteioId === sorteio.id;
-
-                  return (
-                    <div
-                      key={sorteio.id}
-                      style={{
-                        ...styles.listItem,
-                        border: active
-                          ? "2px solid #16a34a"
-                          : "1px solid #e5e7eb",
-                      }}
-                    >
-                      <div
-                        style={styles.listItemMain}
-                        onClick={() => setSelectedSorteioId(sorteio.id)}
-                      >
-                        <div style={styles.listItemTitleRow}>
-                          <strong>{sorteio.title}</strong>
-                          <span style={styles.badge}>{sorteio.status}</span>
-                        </div>
-
-                        <div style={styles.metaText}>
-                          Valor: {currencyBRL(sorteio.price)}
-                        </div>
-                        <div style={styles.metaText}>
-                          Números: {sorteio.totalNumbers || 0}
-                        </div>
-                        <div style={styles.metaText}>
-                          Sorteio: {formatDate(sorteio.drawDate)}
-                        </div>
-                      </div>
-
-                      <div style={styles.inlineButtons}>
-                        <button
-                          type="button"
-                          style={styles.smallButton}
-                          onClick={() => handleEditSorteio(sorteio)}
-                        >
-                          Editar
-                        </button>
-
-                        <button
-                          type="button"
-                          style={styles.smallButton}
-                          onClick={async () => {
-                            setSelectedSorteioId(sorteio.id);
-                            await copyToClipboard(
-                              `${window.location.origin}/#/sorteio/${
-                                sorteio.slug || sorteio.id
-                              }`
-                            );
-                            setMessage("Link copiado.");
-                            setError("");
-                          }}
-                        >
-                          Link
-                        </button>
-
-                        <button
-                          type="button"
-                          style={styles.smallDangerButton}
-                          onClick={() => handleDeleteSorteio(sorteio.id)}
-                        >
-                          Excluir
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
-        {selectedSorteio ? (
-          <>
-            <section style={styles.metricsGrid}>
-              <div style={styles.metricCard}>
-                <span style={styles.metricLabel}>Arrecadado</span>
-                <strong style={styles.metricValue}>
-                  {loadingResumo
-                    ? "..."
-                    : currencyBRL(sorteioMetrics.arrecadado)}
-                </strong>
-              </div>
-
-              <div style={styles.metricCard}>
-                <span style={styles.metricLabel}>Vendidos</span>
-                <strong style={styles.metricValue}>
-                  {loadingResumo ? "..." : sorteioMetrics.vendidos}
-                </strong>
-              </div>
-
-              <div style={styles.metricCard}>
-                <span style={styles.metricLabel}>Reservados</span>
-                <strong style={styles.metricValue}>
-                  {loadingResumo ? "..." : sorteioMetrics.reservados}
-                </strong>
-              </div>
-
-              <div style={styles.metricCard}>
-                <span style={styles.metricLabel}>Disponíveis</span>
-                <strong style={styles.metricValue}>
-                  {loadingResumo ? "..." : sorteioMetrics.disponiveis}
-                </strong>
-              </div>
-            </section>
-
-            <section style={styles.card}>
-              <div style={styles.sectionHeader}>
-                <div>
-                  <h2 style={styles.cardTitle}>Link do sorteio</h2>
-                  <p style={styles.subtitle2}>
-                    Copie ou compartilhe o link público
-                  </p>
-                </div>
-
-                <div style={styles.inlineButtons}>
-                  <button
-                    style={styles.greenButton}
-                    onClick={handleCopyLink}
-                  >
-                    Copiar link
-                  </button>
-                  <button style={styles.grayButton} onClick={handleShare}>
-                    Compartilhar
-                  </button>
-                </div>
-              </div>
-
-              <input
-                readOnly
-                style={styles.input}
-                value={`${window.location.origin}/#/sorteio/${
-                  selectedSorteio.slug || selectedSorteio.id
-                }`}
-              />
-            </section>
-
-            <section style={styles.twoSectionGrid}>
-              <div style={styles.card}>
-                <h2 style={styles.cardTitle}>Adicionar participante</h2>
-
-                <form onSubmit={handleSaveParticipant} style={styles.form}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Nome</label>
-                    <input
-                      style={styles.input}
-                      value={participantForm.nome}
-                      onChange={(e) =>
-                        handleParticipantChange("nome", e.target.value)
-                      }
-                      placeholder="Nome completo"
-                      required
-                    />
-                  </div>
-
-                  <div style={styles.field}>
-                    <label style={styles.label}>Telefone</label>
-                    <input
-                      style={styles.input}
-                      value={participantForm.telefone}
-                      onChange={(e) =>
-                        handleParticipantChange("telefone", e.target.value)
-                      }
-                      placeholder="(16) 99999-9999"
-                      required
-                    />
-                  </div>
-
-                  <div style={styles.field}>
-                    <label style={styles.label}>Números</label>
-                    <input
-                      style={styles.input}
-                      value={participantForm.numeros}
-                      onChange={(e) =>
-                        handleParticipantChange("numeros", e.target.value)
-                      }
-                      placeholder="Ex: 1, 5, 10"
-                      required
-                    />
-                  </div>
-
-                  <div style={styles.twoCols}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Status</label>
-                      <select
-                        style={styles.input}
-                        value={participantForm.status}
-                        onChange={(e) =>
-                          handleParticipantChange("status", e.target.value)
-                        }
-                      >
-                        <option value="reservado">Reservado</option>
-                        <option value="pago">Pago</option>
-                      </select>
-                    </div>
-
-                    <div style={styles.field}>
-                      <label style={styles.label}>Valor pago</label>
-                      <input
-                        type="number"
-                        style={styles.input}
-                        value={participantForm.valorPago}
-                        onChange={(e) =>
-                          handleParticipantChange("valorPago", e.target.value)
-                        }
-                        placeholder="Opcional"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    style={styles.greenButton}
-                    disabled={savingParticipant}
-                  >
-                    {savingParticipant
-                      ? "Salvando..."
-                      : "Cadastrar participante"}
-                  </button>
-                </form>
-              </div>
-
-              <div style={styles.card}>
-                <div style={styles.sectionHeader}>
-                  <div>
-                    <h2 style={styles.cardTitle}>Participantes</h2>
-                    <p style={styles.subtitle2}>
-                      Lista de compradores
-                    </p>
-                  </div>
-
-                  <button
-                    style={styles.greenButton}
-                    onClick={handleExportParticipants}
-                  >
-                    Baixar CSV
-                  </button>
-                </div>
-
-                {loadingParticipants ? (
-                  <p>Carregando...</p>
-                ) : participants.length === 0 ? (
-                  <p>Nenhum participante.</p>
-                ) : (
-                  <div style={styles.tableWrapper}>
-                    <table style={styles.table}>
-                      <thead>
-                        <tr>
-                          <th style={styles.th}>Nome</th>
-                          <th style={styles.th}>Telefone</th>
-                          <th style={styles.th}>Números</th>
-                          <th style={styles.th}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {participants.map((p) => (
-                          <tr key={p.id}>
-                            <td style={styles.td}>{p.nome}</td>
-                            <td style={styles.td}>{p.telefone}</td>
-                            <td style={styles.td}>
-                              {p.numeros?.join(", ")}
-                            </td>
-                            <td style={styles.td}>{p.status}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </section>
-          </>
-        ) : null}
-      </div>
-    </div>
-  );
-}
