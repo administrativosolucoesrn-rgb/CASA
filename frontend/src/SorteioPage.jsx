@@ -50,6 +50,7 @@ export default function SorteioPage() {
 
   const [selectedNumbers, setSelectedNumbers] = useState([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
 
   const [customer, setCustomer] = useState({
     nome: "",
@@ -134,17 +135,15 @@ export default function SorteioPage() {
 
   const unavailableNumbers = useMemo(() => {
     return new Set([...reservedNumbers, ...paidNumbers]);
-  }, [sorteio]);
+  }, [sorteio, reservedNumbers, paidNumbers]);
 
-  const reservedSet = useMemo(() => new Set(reservedNumbers), [sorteio]);
-  const paidSet = useMemo(() => new Set(paidNumbers), [sorteio]);
+  const reservedSet = useMemo(() => new Set(reservedNumbers), [reservedNumbers]);
+  const paidSet = useMemo(() => new Set(paidNumbers), [paidNumbers]);
 
   const totalValue = selectedNumbers.length * price;
 
-  const whatsappLink = useMemo(() => {
-    const digits = onlyDigits(sorteio?.whatsapp || "");
-    return digits ? `https://wa.me/${digits}` : "";
-  }, [sorteio]);
+  const whatsappDigits = onlyDigits(sorteio?.whatsapp || "");
+  const whatsappLink = whatsappDigits ? `https://wa.me/${whatsappDigits}` : "";
 
   function formatNumberLabel(num) {
     return String(num).padStart(3, "0");
@@ -331,6 +330,12 @@ export default function SorteioPage() {
           0% { transform: scale(1); }
           50% { transform: scale(1.01); }
           100% { transform: scale(1); }
+        }
+
+        @keyframes floatWhatsapp {
+          0% { transform: translateY(0); }
+          50% { transform: translateY(-3px); }
+          100% { transform: translateY(0); }
         }
       `}</style>
 
@@ -526,6 +531,29 @@ export default function SorteioPage() {
         </div>
       )}
 
+      {contactOpen && (
+        <div style={styles.contactWrap}>
+          <div style={styles.contactBox}>
+            {whatsappLink ? (
+              <a
+                href={whatsappLink}
+                target="_blank"
+                rel="noreferrer"
+                style={styles.contactPrimary}
+              >
+                💬 Falar com o organizador
+              </a>
+            ) : null}
+
+            {whatsappDigits ? (
+              <div style={styles.contactPhone}>📞 {formatPhone(whatsappDigits)}</div>
+            ) : (
+              <div style={styles.contactPhone}>WhatsApp não configurado</div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div style={styles.topBar}>
         <div style={styles.logoArea}>
           {sorteio?.logoUrl ? (
@@ -710,6 +738,13 @@ export default function SorteioPage() {
           </button>
         </div>
       )}
+
+      <button
+        style={styles.whatsappFloat}
+        onClick={() => setContactOpen((prev) => !prev)}
+      >
+        💬
+      </button>
     </div>
   );
 }
@@ -720,6 +755,7 @@ const styles = {
     background: "#eef2ef",
     paddingBottom: 150,
     fontFamily: "Arial, sans-serif",
+    position: "relative",
   },
   topBar: {
     position: "sticky",
@@ -1330,5 +1366,55 @@ const styles = {
     color: "#111827",
     fontSize: 16,
     fontWeight: 600,
+  },
+  whatsappFloat: {
+    position: "fixed",
+    right: 14,
+    bottom: 96,
+    zIndex: 60,
+    width: 50,
+    height: 50,
+    borderRadius: 999,
+    border: "none",
+    background: "#16a34a",
+    color: "#fff",
+    fontSize: 24,
+    boxShadow: "0 12px 24px rgba(22,163,74,0.35)",
+    animation: "floatWhatsapp 1.8s infinite",
+  },
+  contactWrap: {
+    position: "fixed",
+    right: 14,
+    bottom: 154,
+    zIndex: 61,
+    width: "min(300px, calc(100vw - 28px))",
+  },
+  contactBox: {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 20,
+    padding: 12,
+    boxShadow: "0 16px 30px rgba(15,23,42,0.18)",
+  },
+  contactPrimary: {
+    display: "block",
+    textDecoration: "none",
+    textAlign: "center",
+    background: "#10b981",
+    color: "#fff",
+    borderRadius: 14,
+    padding: "14px 12px",
+    fontSize: 16,
+    fontWeight: 600,
+    marginBottom: 10,
+  },
+  contactPhone: {
+    border: "1px solid #d7dbe2",
+    borderRadius: 14,
+    padding: "12px 14px",
+    textAlign: "center",
+    color: "#344054",
+    fontSize: 15,
+    background: "#f8fafc",
   },
 };
