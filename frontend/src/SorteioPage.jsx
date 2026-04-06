@@ -1,1769 +1,1405 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 
-const express = require("express");
-const cors = require("cors");
-const fs = require("fs");
-const fsp = require("fs/promises");
-const path = require("path");
-const multer = require("multer");
-const QRCode = require("qrcode");
+const API_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
 
-const app = express();
-const PORT = process.env.PORT || 3001;
+const STORAGE_KEY = "casa_premiada_cliente";
+const ORGANIZER_WHATSAPP = "+5516993537516";
 
-/**
- * =========================================================
- * CONFIG
- * =========================================================
- */
-const FRONTEND_URL = process.env.FRONTEND_URL || "*";
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
-
-const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
-const PAGARME_API_URL = "https://api.pagar.me/core/v5";
-const PAGARME_DEFAULT_DOCUMENT = process.env.PAGARME_DEFAULT_DOCUMENT || "";
-const PAGARME_DEFAULT_EMAIL = process.env.PAGARME_DEFAULT_EMAIL || "pagamento@casapremiada.com";
-
-const PIX_KEY = process.env.PIX_KEY || "SEU_PIX_AQUI";
-const PIX_MERCHANT_NAME = process.env.PIX_MERCHANT_NAME || "CASA PREMIADA";
-const PIX_MERCHANT_CITY = process.env.PIX_MERCHANT_CITY || "RIBEIRAO PRETO";
-const PIX_DESCRIPTION = process.env.PIX_DESCRIPTION || "Pagamento Sorteio";
-const RESERVATION_EXPIRES_MINUTES = Number(
-  process.env.RESERVATION_EXPIRES_MINUTES || 30
-);
-
-const DATA_DIR = path.join(__dirname, "data");
-const UPLOADS_DIR = path.join(__dirname, "uploads");
-const DB_FILE = path.join(DATA_DIR, "db.json");
-
-/**
- * =========================================================
- * APP MIDDLEWARE
- * =========================================================
- */
-app.use(
-  cors({
-    origin: FRONTEND_URL === "*" ? true : FRONTEND_URL,
-    credentials: true,
-  })
-);
-app.use(express.json({ limit: "10mb" }));
-app.use("/uploads", express.static(UPLOADS_DIR));
-
-/**
- * =========================================================
- * STARTUP FILES
- * =========================================================
- */
-ensureFoldersAndDb();
-
-/**
- * =========================================================
- * MULTER
- * =========================================================
- */
-const storage = multer.diskStorage({
-  destination: async (_, __, cb) => {
-    cb(null, UPLOADS_DIR);
-  },
-  filename: (_, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase() || ".jpg";
-    const safeName = slugify(path.basename(file.originalname || "imagem", ext));
-    cb(null, `${Date.now()}-${safeName}${ext}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 8 * 1024 * 1024,
-  },
-});
-
-/**
- * =========================================================
- * HELPERS
- * =========================================================
- */
-function pagarmeBasicAuth() {
-  return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
+function onlyDigits(value = "") {
+  return String(value).replace(/\D/g, "");
 }
 
-
-function normalizeDocument(value = "") {
-  return String(value).replace(/\D/g, "").slice(0, 14);
+function formatPhone(value = "") {
+  const digits = onlyDigits(value).slice(0, 11);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
 }
 
-function normalizeEmail(value = "") {
-  return String(value || "").trim().toLowerCase();
-}
+function formatWhatsappContact(value = "") {
+  const digits = onlyDigits(value);
 
-function getPhonePartsForPagarme(phoneDigits = "") {
-  const digits = normalizePhone(phoneDigits);
-
-  if (digits.length < 10) {
-    return {
-      country_code: "55",
-      area_code: "",
-      number: "",
-    };
+  if (digits.length === 13 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`;
   }
 
-  let local = digits;
-  if (digits.startsWith("55") && digits.length >= 12) {
-    local = digits.slice(2);
+  if (digits.length === 12 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`;
   }
 
-  return {
-    country_code: "55",
-    area_code: local.slice(0, 2),
-    number: local.slice(2),
-  };
+  return value;
 }
 
-function getCustomerDocument(req) {
-  return normalizeDocument(
-    req.body.document ||
-      req.body.cpf ||
-      req.body.cnpj ||
-      PAGARME_DEFAULT_DOCUMENT
-  );
+function formatCurrency(value) {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
-function getCustomerEmail(req, whatsapp) {
-  const explicitEmail = normalizeEmail(req.body.email || "");
-  if (explicitEmail) return explicitEmail;
-
-  const digits = normalizePhone(whatsapp);
-  if (digits) return `cliente${digits}@casapremiada.local`;
-
-  return PAGARME_DEFAULT_EMAIL;
+function formatDateTime(dateString) {
+  if (!dateString) return "Em breve";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "Em breve";
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
-function getCustomerTypeFromDocument(document) {
-  if (String(document).length === 14) return "company";
-  return "individual";
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
-function ensureFoldersAndDb() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+export default function SorteioPage() {
+  const { slug } = useParams();
 
-  if (!fs.existsSync(DB_FILE)) {
-    const initialDb = {
-      sorteios: [],
-      clientes: [],
-      reservas: [],
-      pagamentos: [],
-      configuracoes: {
-        companyName: "Casa Premiada Ribeirão",
-        logoUrl: "",
-        whatsapp: "",
-      },
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(initialDb, null, 2), "utf-8");
-  }
-}
+  const [erro, setErro] = useState("");
+  const [sorteio, setSorteio] = useState(null);
 
-async function readDb() {
-  const raw = await fsp.readFile(DB_FILE, "utf-8");
-  return JSON.parse(raw);
-}
+  const [selectedNumbers, setSelectedNumbers] = useState([]);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
 
-async function writeDb(db) {
-  await fsp.writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60000);
-}
-
-function isExpired(expiresAt) {
-  if (!expiresAt) return false;
-  return new Date(expiresAt).getTime() < Date.now();
-}
-
-function generateId(prefix = "id") {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now()
-    .toString(36)
-    .slice(-6)}`;
-}
-
-function slugify(text = "") {
-  return String(text)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\w\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .toLowerCase();
-}
-
-function normalizePhone(value = "") {
-  return String(value).replace(/\D/g, "").slice(0, 13);
-}
-
-function normalizeName(value = "") {
-  return String(value).trim().replace(/\s+/g, " ");
-}
-
-function toMoneyNumber(value) {
-  const num = Number(value);
-  return Number.isFinite(num) ? Number(num.toFixed(2)) : 0;
-}
-
-function absoluteFileUrl(fileName) {
-  if (!fileName) return "";
-  if (/^https?:\/\//i.test(fileName)) return fileName;
-  const clean = String(fileName).replace(/^\/+/, "");
-  return `${BASE_URL}/${clean}`;
-}
-
-function sanitizeReservedNumbers(numbers) {
-  if (!Array.isArray(numbers)) return [];
-  return [...new Set(numbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
-}
-
-function parseNumbersAdvanced(input = "") {
-  const source = String(input || "").trim();
-  if (!source) return [];
-
-  const result = new Set();
-
-  source
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .forEach((part) => {
-      if (part.includes("-")) {
-        const [start, end] = part.split("-").map((n) => Number(String(n).trim()));
-        if (
-          Number.isInteger(start) &&
-          Number.isInteger(end) &&
-          start > 0 &&
-          end >= start
-        ) {
-          for (let i = start; i <= end; i += 1) result.add(i);
-        }
-      } else {
-        const n = Number(part);
-        if (Number.isInteger(n) && n > 0) result.add(n);
-      }
-    });
-
-  return [...result].sort((a, b) => a - b);
-}
-
-function compactNumbers(numbers = []) {
-  const arr = [...new Set(numbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))].sort(
-    (a, b) => a - b
-  );
-
-  if (!arr.length) return "";
-
-  const ranges = [];
-  let start = arr[0];
-  let prev = arr[0];
-
-  for (let i = 1; i < arr.length; i += 1) {
-    const current = arr[i];
-
-    if (current === prev + 1) {
-      prev = current;
-      continue;
-    }
-
-    ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
-    start = current;
-    prev = current;
-  }
-
-  ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
-
-  return ranges.join(", ");
-}
-
-function inferReservaOrigin(reserva) {
-  if (reserva.origem) return reserva.origem;
-  const lower = String(reserva.nome || "").toLowerCase();
-
-  if (lower.includes("mãe") || lower.includes("mae")) return "mae";
-  if (lower.includes("pai")) return "pai";
-  if (lower.includes("vó") || lower.includes("vo")) return "vo";
-  if (lower.includes("site")) return "site";
-  return "manual";
-}
-
-function inferReservaBlock(reserva) {
-  if (typeof reserva.bloco === "boolean") return reserva.bloco;
-  const lower = String(reserva.nome || "").toLowerCase();
-  return lower.includes("vendas externas");
-}
-
-function migrateDb(db) {
-  if (!Array.isArray(db.sorteios)) db.sorteios = [];
-  if (!Array.isArray(db.clientes)) db.clientes = [];
-  if (!Array.isArray(db.reservas)) db.reservas = [];
-  if (!Array.isArray(db.pagamentos)) db.pagamentos = [];
-  if (!db.configuracoes || typeof db.configuracoes !== "object") {
-    db.configuracoes = {
-      companyName: "Casa Premiada Ribeirão",
-      logoUrl: "",
-      whatsapp: "",
-    };
-  }
-
-  db.reservas = db.reservas.map((reserva) => ({
-    ...reserva,
-    origem: inferReservaOrigin(reserva),
-    bloco: inferReservaBlock(reserva),
-    observacao: reserva.observacao || "",
-    numerosTexto: reserva.numerosTexto || compactNumbers(reserva.numeros || []),
-    updatedAt: reserva.updatedAt || reserva.createdAt || nowIso(),
-  }));
-
-  db.sorteios = db.sorteios.map((sorteio) => ({
-    ...sorteio,
-    logoUrl:
-      sorteio.logoUrl !== undefined
-        ? sorteio.logoUrl
-        : db.configuracoes?.logoUrl || "",
-  }));
-
-  return db;
-}
-
-function getSorteioDisplay(sorteio, db) {
-  cleanupExpiredReservationsForSorteio(sorteio, db);
-
-  const reservedNumbers = db.reservas
-    .filter(
-      (r) =>
-        r.sorteioId === sorteio.id &&
-        r.status === "reservado" &&
-        !r.bloco &&
-        !isExpired(r.expiresAt)
-    )
-    .flatMap((r) => r.numeros);
-
-  const paidNumbers = db.pagamentos
-    .filter((p) => p.sorteioId === sorteio.id && p.status === "pago")
-    .flatMap((p) => p.numeros);
-
-  const uniqueReserved = [...new Set(reservedNumbers.map(Number))].sort((a, b) => a - b);
-  const uniquePaid = [...new Set(paidNumbers.map(Number))].sort((a, b) => a - b);
-
-  return {
-    id: sorteio.id,
-    slug: sorteio.slug,
-    title: sorteio.title,
-    subtitle: sorteio.subtitle || "",
-    descricao: sorteio.descricao || "",
-    companyName:
-      sorteio.companyName || db.configuracoes?.companyName || "Casa Premiada Ribeirão",
-    whatsapp: sorteio.whatsapp || db.configuracoes?.whatsapp || "",
-    image: sorteio.image || "",
-    logoUrl: sorteio.logoUrl || db.configuracoes?.logoUrl || "",
-    drawDate: sorteio.drawDate || "",
-    totalNumbers: sorteio.totalNumbers,
-    price: sorteio.price,
-    status: sorteio.status || "ativo",
-    reservedNumbers: uniqueReserved,
-    paidNumbers: uniquePaid,
-    soldNumbers: uniquePaid,
-    createdAt: sorteio.createdAt,
-    updatedAt: sorteio.updatedAt,
-  };
-}
-
-function getUnavailableNumbersForSorteio(sorteioId, db, ignoreReservaId = null) {
-  cleanupExpiredReservations(db);
-
-  const reserved = db.reservas
-    .filter(
-      (r) =>
-        r.sorteioId === sorteioId &&
-        r.status === "reservado" &&
-        !r.bloco &&
-        !isExpired(r.expiresAt) &&
-        (ignoreReservaId ? r.id !== ignoreReservaId : true)
-    )
-    .flatMap((r) => r.numeros);
-
-  const paid = db.pagamentos
-    .filter((p) => p.sorteioId === sorteioId && p.status === "pago")
-    .flatMap((p) => p.numeros);
-
-  return [...new Set([...reserved, ...paid].map(Number))];
-}
-
-function cleanupExpiredReservations(db) {
-  let changed = false;
-
-  db.reservas = db.reservas.map((reserva) => {
-    if (reserva.status === "reservado" && isExpired(reserva.expiresAt)) {
-      changed = true;
-      return {
-        ...reserva,
-        status: "expirado",
-        updatedAt: nowIso(),
-      };
-    }
-    return reserva;
+  const [customer, setCustomer] = useState({
+    nome: "",
+    whatsapp: "",
   });
 
-  return changed;
-}
+  const [pixData, setPixData] = useState(null);
+  const [submittingPix, setSubmittingPix] = useState(false);
+  const [copiedPix, setCopiedPix] = useState(false);
 
-function cleanupExpiredReservationsForSorteio(sorteio, db) {
-  if (!sorteio) return false;
-  let changed = false;
+  const [myNumbersOpen, setMyNumbersOpen] = useState(false);
+  const [myNumbersPhone, setMyNumbersPhone] = useState("");
+  const [myNumbersLoading, setMyNumbersLoading] = useState(false);
+  const [myNumbersResult, setMyNumbersResult] = useState(null);
 
-  db.reservas = db.reservas.map((reserva) => {
-    if (
-      reserva.sorteioId === sorteio.id &&
-      reserva.status === "reservado" &&
-      isExpired(reserva.expiresAt)
-    ) {
-      changed = true;
-      return {
-        ...reserva,
-        status: "expirado",
-        updatedAt: nowIso(),
-      };
-    }
-    return reserva;
-  });
+  const [showFloatingCta, setShowFloatingCta] = useState(true);
+  const [logoVisible, setLogoVisible] = useState(true);
 
-  return changed;
-}
+  const numbersRef = useRef(null);
+  const quickCardRef = useRef(null);
+  const numberGridRef = useRef(null);
 
-function findClienteByPhone(db, whatsapp) {
-  const normalized = normalizePhone(whatsapp);
-  return db.clientes.find((c) => normalizePhone(c.whatsapp) === normalized) || null;
-}
-
-function upsertCliente(db, { nome, whatsapp }) {
-  const normalizedPhone = normalizePhone(whatsapp);
-  const normalizedName = normalizeName(nome);
-
-  let cliente = db.clientes.find(
-    (c) => normalizePhone(c.whatsapp) === normalizedPhone
-  );
-
-  if (cliente) {
-    cliente.nome = normalizedName || cliente.nome;
-    cliente.whatsapp = normalizedPhone;
-    cliente.updatedAt = nowIso();
-    return cliente;
-  }
-
-  cliente = {
-    id: generateId("cli"),
-    nome: normalizedName,
-    whatsapp: normalizedPhone,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  };
-
-  db.clientes.push(cliente);
-  return cliente;
-}
-
-function crc16(str) {
-  let crc = 0xffff;
-  for (let c = 0; c < str.length; c += 1) {
-    crc ^= str.charCodeAt(c) << 8;
-    for (let i = 0; i < 8; i += 1) {
-      if ((crc & 0x8000) !== 0) {
-        crc = (crc << 1) ^ 0x1021;
-      } else {
-        crc <<= 1;
-      }
-      crc &= 0xffff;
-    }
-  }
-  return crc.toString(16).toUpperCase().padStart(4, "0");
-}
-
-function emv(id, value) {
-  const stringValue = String(value);
-  return `${id}${String(stringValue.length).padStart(2, "0")}${stringValue}`;
-}
-
-function buildPixPayload({
-  pixKey,
-  description,
-  merchantName,
-  merchantCity,
-  txid,
-  amount,
-}) {
-  const gui = emv("00", "BR.GOV.BCB.PIX");
-  const key = emv("01", pixKey);
-  const desc = description ? emv("02", description.slice(0, 99)) : "";
-  const merchantAccountInfo = emv("26", `${gui}${key}${desc}`);
-
-  const payloadWithoutCrc =
-    emv("00", "01") +
-    emv("01", "12") +
-    merchantAccountInfo +
-    emv("52", "0000") +
-    emv("53", "986") +
-    (amount ? emv("54", Number(amount).toFixed(2)) : "") +
-    emv("58", "BR") +
-    emv("59", (merchantName || "RECEBEDOR").slice(0, 25)) +
-    emv("60", (merchantCity || "CIDADE").slice(0, 15)) +
-    emv("62", emv("05", (txid || "***").slice(0, 25))) +
-    "6304";
-
-  const crc = crc16(payloadWithoutCrc);
-  return payloadWithoutCrc + crc;
-}
-
-function formatImageField(req, file, fallback = "") {
-  if (file?.filename) return absoluteFileUrl(`uploads/${file.filename}`);
-  if (req.body?.image) return String(req.body.image).trim();
-  if (req.body?.imagem) return String(req.body.imagem).trim();
-  return fallback;
-}
-
-function formatLogoField(req, file, fallback = "") {
-  if (file?.filename) return absoluteFileUrl(`uploads/${file.filename}`);
-  if (req.body?.logoUrl) return String(req.body.logoUrl).trim();
-  if (req.body?.logo) return String(req.body.logo).trim();
-  return fallback;
-}
-
-function validateNumerosForSorteio(sorteio, numeros) {
-  const invalidNumbers = numeros.filter(
-    (n) => n < 1 || n > Number(sorteio.totalNumbers)
-  );
-
-  if (invalidNumbers.length) {
-    return `Número(s) inválido(s): ${invalidNumbers.join(", ")}`;
-  }
-
-  return "";
-}
-
-function findActiveBlockReserva(db, sorteioId, origem) {
-  return (
-    db.reservas.find(
-      (r) =>
-        r.sorteioId === sorteioId &&
-        r.bloco === true &&
-        r.status === "reservado" &&
-        !isExpired(r.expiresAt) &&
-        String(r.origem || "").toLowerCase() === String(origem || "").toLowerCase()
-    ) || null
-  );
-}
-
-function removeNumbersFromBlockReserva(reserva, numerosVendidos) {
-  const vendidos = new Set(numerosVendidos.map(Number));
-  const restantes = (reserva.numeros || []).filter((n) => !vendidos.has(Number(n)));
-
-  reserva.numeros = restantes;
-  reserva.numerosTexto = compactNumbers(restantes);
-  reserva.total = toMoneyNumber(restantes.length * Number(reserva.valorNumero || 0));
-
-  return restantes.length > 0;
-}
-
-function splitBlockIfNeeded(db, sorteio, origem, numerosVendidos) {
-  if (!origem || ["site", "manual"].includes(String(origem).toLowerCase())) {
-    return;
-  }
-
-  const bloco = findActiveBlockReserva(db, sorteio.id, origem);
-  if (!bloco) return;
-
-  const soldSet = new Set(numerosVendidos.map(Number));
-  const intersection = (bloco.numeros || []).filter((n) => soldSet.has(Number(n)));
-
-  if (!intersection.length) return;
-
-  const keep = removeNumbersFromBlockReserva(bloco, intersection);
-  bloco.updatedAt = nowIso();
-
-  if (!keep) {
-    db.reservas = db.reservas.filter((r) => r.id !== bloco.id);
-  }
-}
-
-function createReservaRecord({
-  db,
-  sorteio,
-  cliente,
-  nome,
-  whatsapp,
-  numeros,
-  status = "reservado",
-  origem = "site",
-  bloco = false,
-  observacao = "",
-  expiresAt = null,
-}) {
-  const reserva = {
-    id: generateId("res"),
-    sorteioId: sorteio.id,
-    clienteId: cliente?.id || null,
-    nome,
-    whatsapp,
-    numeros,
-    numerosTexto: compactNumbers(numeros),
-    total: toMoneyNumber(numeros.length * Number(sorteio.price || 0)),
-    valorNumero: Number(sorteio.price || 0),
-    status,
-    origem,
-    bloco,
-    observacao,
-    expiresAt,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  };
-
-  db.reservas.push(reserva);
-  return reserva;
-}
-
-/**
- * =========================================================
- * HEALTH
- * =========================================================
- */
-app.get("/api/health", async (_, res) => {
-  res.json({
-    ok: true,
-    message: "Servidor rodando",
-    time: nowIso(),
-  });
-});
-
-/**
- * =========================================================
- * CONFIGURAÇÕES GERAIS
- * =========================================================
- */
-app.get("/api/configuracoes", async (_, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-    await writeDb(db);
-    res.json(db.configuracoes || {});
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar configurações." });
-  }
-});
-
-app.put(
-  "/api/configuracoes",
-  upload.single("logo"),
-  async (req, res) => {
+  useEffect(() => {
     try {
-      let db = await readDb();
-      db = migrateDb(db);
-
-      db.configuracoes = {
-        ...(db.configuracoes || {}),
-        companyName:
-          req.body.companyName?.trim() ||
-          req.body.empresa?.trim() ||
-          db.configuracoes.companyName ||
-          "Casa Premiada Ribeirão",
-        whatsapp:
-          normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
-          db.configuracoes.whatsapp ||
-          "",
-        logoUrl: formatLogoField(req, req.file, db.configuracoes.logoUrl || ""),
-      };
-
-      await writeDb(db);
-
-      res.json({
-        success: true,
-        configuracoes: db.configuracoes,
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      setCustomer({
+        nome: parsed?.nome || "",
+        whatsapp: parsed?.whatsapp || "",
       });
+      setMyNumbersPhone(parsed?.whatsapp || "");
     } catch {
-      res.status(500).json({ error: "Erro ao salvar configurações." });
+      //
     }
-  }
-);
+  }, []);
 
-/**
- * =========================================================
- * SORTEIOS
- * =========================================================
- */
-app.get("/api/sorteios", async (_, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
+  useEffect(() => {
+    if (!slug) return;
+    loadSorteio();
+  }, [slug]);
 
-    const changed = cleanupExpiredReservations(db);
-    if (changed) await writeDb(db);
+  useEffect(() => {
+    setLogoVisible(true);
+  }, [sorteio?.logoUrl]);
 
-    const sorteios = db.sorteios
-      .map((s) => getSorteioDisplay(s, db))
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  useEffect(() => {
+    if (!numberGridRef.current) return;
 
-    res.json(sorteios);
-  } catch {
-    res.status(500).json({ error: "Erro ao listar sorteios." });
-  }
-});
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const chegouNosNumeros = entry.isIntersecting;
+        setShowFloatingCta(!chegouNosNumeros);
 
-app.get("/api/sorteios/:slug", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
+        if (chegouNosNumeros) {
+          setContactOpen(false);
+        }
+      },
+      {
+        threshold: 0.08,
+      }
+    );
 
-    const { slug } = req.params;
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
+    observer.observe(numberGridRef.current);
 
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
+    return () => observer.disconnect();
+  }, [sorteio]);
 
-    const changed = cleanupExpiredReservationsForSorteio(sorteio, db);
-    if (changed) await writeDb(db);
-
-    res.json(getSorteioDisplay(sorteio, db));
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar sorteio." });
-  }
-});
-
-app.post(
-  "/api/sorteios",
-  upload.fields([
-    { name: "image", maxCount: 1 },
-    { name: "logo", maxCount: 1 },
-  ]),
-  async (req, res) => {
+  async function safeJson(res) {
+    const text = await res.text();
     try {
-      let db = await readDb();
-      db = migrateDb(db);
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
+    }
+  }
 
-      const imageFile = req.files?.image?.[0] || null;
-      const logoFile = req.files?.logo?.[0] || null;
+  async function loadSorteio() {
+    try {
+      setErro("");
 
-      const title = String(req.body.title || req.body.titulo || "").trim();
-      const subtitle = String(req.body.subtitle || req.body.subtitulo || "").trim();
-      const descricao = String(req.body.descricao || "").trim();
-      const companyName =
-        String(req.body.companyName || req.body.empresa || "").trim() ||
-        db.configuracoes?.companyName ||
-        "Casa Premiada Ribeirão";
+      const res = await fetch(`${API_URL}/api/sorteios/${slug}`);
+      const data = await safeJson(res);
 
-      const whatsapp =
-        normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
-        db.configuracoes?.whatsapp ||
+      if (!res.ok) {
+        throw new Error(data?.error || "Não foi possível carregar o sorteio.");
+      }
+
+      setSorteio(data);
+    } catch (err) {
+      setErro(err.message || "Erro ao carregar sorteio.");
+    }
+  }
+
+  function persistCustomer(next) {
+    setCustomer(next);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }
+
+  const totalNumbers = Number(sorteio?.totalNumbers || 0);
+  const price = Number(sorteio?.price || 0);
+  const heroImage =
+    sorteio?.image ||
+    "https://via.placeholder.com/1200x900?text=Premio";
+  const title = sorteio?.title || "Casa Premiada Ribeirão";
+  const description = sorteio?.descricao || sorteio?.subtitle || "";
+
+  const reservedNumbers = safeArray(sorteio?.reservedNumbers).map(Number);
+  const paidNumbers = safeArray(sorteio?.paidNumbers).map(Number);
+
+  const unavailableNumbers = useMemo(() => {
+    return new Set([...reservedNumbers, ...paidNumbers]);
+  }, [reservedNumbers, paidNumbers]);
+
+  const reservedSet = useMemo(() => new Set(reservedNumbers), [reservedNumbers]);
+  const paidSet = useMemo(() => new Set(paidNumbers), [paidNumbers]);
+
+  const totalValue = selectedNumbers.length * price;
+
+  const whatsappDigits = onlyDigits(ORGANIZER_WHATSAPP);
+  const whatsappLink = `https://wa.me/${whatsappDigits}`;
+
+  function formatNumberLabel(num) {
+    return String(num).padStart(3, "0");
+  }
+
+  function handleCustomerChange(field, value) {
+    const next = {
+      ...customer,
+      [field]: field === "whatsapp" ? onlyDigits(value) : value,
+    };
+    persistCustomer(next);
+  }
+
+  function scrollToNumbers() {
+    numbersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function getAvailableNumbers() {
+    const list = [];
+    for (let i = 1; i <= totalNumbers; i += 1) {
+      if (!unavailableNumbers.has(i) && !selectedNumbers.includes(i)) {
+        list.push(i);
+      }
+    }
+    return list;
+  }
+
+  function toggleNumber(num) {
+    if (unavailableNumbers.has(num)) return;
+    setPixData(null);
+
+    setSelectedNumbers((prev) => {
+      const exists = prev.includes(num);
+      const updated = exists
+        ? prev.filter((n) => n !== num)
+        : [...prev, num].sort((a, b) => a - b);
+
+      if (updated.length === 0) {
+        setPaymentOpen(false);
+      }
+      return updated;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedNumbers([]);
+    setPixData(null);
+    setPaymentOpen(false);
+  }
+
+  function openPayment() {
+    if (!selectedNumbers.length) return;
+    setErro("");
+    setPaymentOpen(true);
+  }
+
+  function pickRandom(quantity) {
+    const available = getAvailableNumbers();
+    if (!available.length) return;
+
+    const shuffled = [...available].sort(() => Math.random() - 0.5);
+    const chosen = shuffled.slice(0, quantity);
+
+    setSelectedNumbers((prev) =>
+      [...new Set([...prev, ...chosen])].sort((a, b) => a - b)
+    );
+    setPixData(null);
+  }
+
+  async function handlePix() {
+    try {
+      setErro("");
+      setSubmittingPix(true);
+      setPixData(null);
+
+      if (!customer.nome.trim()) {
+        throw new Error("Digite seu nome.");
+      }
+
+      if (onlyDigits(customer.whatsapp).length < 10) {
+        throw new Error("Digite um celular válido.");
+      }
+
+      if (!selectedNumbers.length) {
+        throw new Error("Escolha pelo menos um número.");
+      }
+
+      const payload = {
+        slug,
+        nome: customer.nome.trim(),
+        whatsapp: onlyDigits(customer.whatsapp),
+        numeros: selectedNumbers,
+      };
+
+      const res = await fetch(`${API_URL}/api/pix`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Não foi possível gerar o PIX.");
+      }
+
+      setPixData(data);
+      await loadSorteio();
+    } catch (err) {
+      setErro(err.message || "Erro ao gerar PIX.");
+    } finally {
+      setSubmittingPix(false);
+    }
+  }
+
+  async function copyPixCode() {
+    try {
+      const code =
+        pixData?.pixCopiaECola ||
+        pixData?.pixCode ||
+        pixData?.copiaecola ||
         "";
 
-      const totalNumbers = Number(
-        req.body.totalNumbers || req.body.quantidadeNumeros || 100
+      if (!code) return;
+      await navigator.clipboard.writeText(code);
+      setCopiedPix(true);
+      setTimeout(() => setCopiedPix(false), 1800);
+    } catch {
+      setCopiedPix(false);
+    }
+  }
+
+  async function searchMyNumbers() {
+    try {
+      setErro("");
+      setMyNumbersLoading(true);
+      setMyNumbersResult(null);
+
+      const phone = onlyDigits(myNumbersPhone);
+      if (phone.length < 10) {
+        throw new Error("Digite seu telefone.");
+      }
+
+      const res = await fetch(
+        `${API_URL}/api/meus-numeros/${slug}?whatsapp=${encodeURIComponent(phone)}`
       );
-      const price = toMoneyNumber(req.body.price || req.body.valor || 0);
-      const drawDate = String(req.body.drawDate || req.body.dataSorteio || "").trim();
+      const data = await safeJson(res);
 
-      if (!title) {
-        return res.status(400).json({ error: "Título é obrigatório." });
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Não foi possível consultar seus números."
+        );
       }
 
-      if (!Number.isInteger(totalNumbers) || totalNumbers <= 0) {
-        return res.status(400).json({ error: "Quantidade de números inválida." });
-      }
+      setMyNumbersResult(data);
+    } catch (err) {
+      setErro(err.message || "Erro ao consultar.");
+    } finally {
+      setMyNumbersLoading(false);
+    }
+  }
 
-      if (price <= 0) {
-        return res.status(400).json({ error: "Valor inválido." });
-      }
+  return (
+    <div style={styles.page}>
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #eef2ef; }
 
-      let slug = slugify(req.body.slug || title);
-      if (!slug) slug = generateId("sorteio");
-
-      const slugAlreadyExists = db.sorteios.some((s) => s.slug === slug);
-      if (slugAlreadyExists) {
-        slug = `${slug}-${Date.now().toString().slice(-4)}`;
-      }
-
-      const sorteio = {
-        id: generateId("sort"),
-        slug,
-        title,
-        subtitle,
-        descricao,
-        companyName,
-        whatsapp,
-        image: formatImageField(req, imageFile, ""),
-        logoUrl: formatLogoField(req, logoFile, db.configuracoes?.logoUrl || ""),
-        totalNumbers,
-        price,
-        drawDate,
-        status: String(req.body.status || "ativo").trim() || "ativo",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-      };
-
-      db.sorteios.push(sorteio);
-
-      const criarBloco = (inicio, fim, origem, nomeBloco) => {
-        if (inicio > sorteio.totalNumbers) return;
-
-        const limiteFinal = Math.min(fim, sorteio.totalNumbers);
-        const numeros = [];
-        for (let i = inicio; i <= limiteFinal; i += 1) {
-          numeros.push(i);
+        @keyframes floatArrows {
+          0% { transform: translateY(0px); opacity: 0.9; }
+          50% { transform: translateY(6px); opacity: 1; }
+          100% { transform: translateY(0px); opacity: 0.9; }
         }
 
-        if (!numeros.length) return;
-
-        db.reservas.push({
-          id: generateId("res"),
-          sorteioId: sorteio.id,
-          clienteId: null,
-          nome: nomeBloco,
-          whatsapp: "",
-          numeros,
-          numerosTexto: `${inicio}-${limiteFinal}`,
-          total: 0,
-          valorNumero: sorteio.price,
-          status: "reservado",
-          origem,
-          bloco: true,
-          observacao: "BLOCO AUTOMÁTICO",
-          expiresAt: addMinutes(new Date(), 60 * 24 * 365).toISOString(),
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-        });
-      };
-
-      // Site: 1-150 livre
-      criarBloco(151, 300, "mae", "Vendas externas mãe");
-      criarBloco(301, 450, "pai", "Vendas externas pai");
-      criarBloco(451, 550, "vo", "Vendas externas vó");
-
-      await writeDb(db);
-
-      res.status(201).json({
-        success: true,
-        sorteio: getSorteioDisplay(sorteio, db),
-        publicUrl: `${req.protocol}://${req.get("host")}/sorteio/${sorteio.slug}`,
-      });
-    } catch {
-      res.status(500).json({ error: "Erro ao criar sorteio." });
-    }
-  }
-);
-
-app.put(
-  "/api/sorteios/:id",
-  upload.fields([
-    { name: "image", maxCount: 1 },
-    { name: "logo", maxCount: 1 },
-  ]),
-  async (req, res) => {
-    try {
-      let db = await readDb();
-      db = migrateDb(db);
-
-      const { id } = req.params;
-
-      const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-
-      if (!sorteio) {
-        return res.status(404).json({ error: "Sorteio não encontrado." });
-      }
-
-      const imageFile = req.files?.image?.[0] || null;
-      const logoFile = req.files?.logo?.[0] || null;
-
-      const nextTitle =
-        req.body.title !== undefined || req.body.titulo !== undefined
-          ? String(req.body.title || req.body.titulo || "").trim()
-          : sorteio.title;
-
-      const nextSlugInput =
-        req.body.slug !== undefined ? String(req.body.slug || "").trim() : sorteio.slug;
-
-      const nextSlugBase = slugify(nextSlugInput || nextTitle || sorteio.title);
-      let nextSlug = nextSlugBase || sorteio.slug;
-
-      if (
-        nextSlug !== sorteio.slug &&
-        db.sorteios.some((s) => s.slug === nextSlug && s.id !== sorteio.id)
-      ) {
-        nextSlug = `${nextSlug}-${Date.now().toString().slice(-4)}`;
-      }
-
-      sorteio.title = nextTitle || sorteio.title;
-      sorteio.subtitle =
-        req.body.subtitle !== undefined || req.body.subtitulo !== undefined
-          ? String(req.body.subtitle || req.body.subtitulo || "").trim()
-          : sorteio.subtitle || "";
-
-      sorteio.descricao =
-        req.body.descricao !== undefined
-          ? String(req.body.descricao || "").trim()
-          : sorteio.descricao || "";
-
-      sorteio.companyName =
-        req.body.companyName !== undefined || req.body.empresa !== undefined
-          ? String(req.body.companyName || req.body.empresa || "").trim() ||
-            sorteio.companyName
-          : sorteio.companyName;
-
-      sorteio.whatsapp =
-        req.body.whatsapp !== undefined || req.body.telefone !== undefined
-          ? normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
-            sorteio.whatsapp
-          : sorteio.whatsapp;
-
-      sorteio.totalNumbers =
-        req.body.totalNumbers !== undefined ||
-        req.body.quantidadeNumeros !== undefined
-          ? Number(req.body.totalNumbers || req.body.quantidadeNumeros || sorteio.totalNumbers)
-          : sorteio.totalNumbers;
-
-      sorteio.price =
-        req.body.price !== undefined || req.body.valor !== undefined
-          ? toMoneyNumber(req.body.price || req.body.valor || sorteio.price)
-          : sorteio.price;
-
-      sorteio.drawDate =
-        req.body.drawDate !== undefined || req.body.dataSorteio !== undefined
-          ? String(req.body.drawDate || req.body.dataSorteio || "").trim()
-          : sorteio.drawDate;
-
-      sorteio.status =
-        req.body.status !== undefined
-          ? String(req.body.status || "ativo").trim()
-          : sorteio.status || "ativo";
-
-      sorteio.slug = nextSlug;
-      sorteio.image = formatImageField(req, imageFile, sorteio.image || "");
-      sorteio.logoUrl = formatLogoField(req, logoFile, sorteio.logoUrl || "");
-      sorteio.updatedAt = nowIso();
-
-      await writeDb(db);
-
-      res.json({
-        success: true,
-        sorteio: getSorteioDisplay(sorteio, db),
-      });
-    } catch {
-      res.status(500).json({ error: "Erro ao atualizar sorteio." });
-    }
-  }
-);
-
-app.delete("/api/sorteios/:id", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    db.sorteios = db.sorteios.filter((s) => s.id !== sorteio.id);
-    db.reservas = db.reservas.filter((r) => r.sorteioId !== sorteio.id);
-    db.pagamentos = db.pagamentos.filter((p) => p.sorteioId !== sorteio.id);
-
-    await writeDb(db);
-
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ error: "Erro ao excluir sorteio." });
-  }
-});
-
-/**
- * =========================================================
- * CLIENTES
- * =========================================================
- */
-app.get("/api/clientes/buscar", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const whatsapp = normalizePhone(req.query.whatsapp || "");
-
-    if (!whatsapp) {
-      return res.status(400).json({ error: "WhatsApp é obrigatório." });
-    }
-
-    const cliente = findClienteByPhone(db, whatsapp);
-
-    if (!cliente) {
-      return res.json({ cliente: null });
-    }
-
-    res.json({ cliente });
-  } catch {
-    res.status(500).json({ error: "Erro ao buscar cliente." });
-  }
-});
-
-/**
- * =========================================================
- * RESERVAS
- * =========================================================
- */
-app.post("/api/reservas", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const slug = String(req.body.slug || "").trim();
-    const nome = normalizeName(req.body.nome || "");
-    const whatsapp = normalizePhone(req.body.whatsapp || "");
-    const numeros = sanitizeReservedNumbers(req.body.numeros);
-    const origem = String(req.body.origem || "site").trim() || "site";
-    const bloco = Boolean(req.body.bloco);
-    const observacao = String(req.body.observacao || "").trim();
-
-    if (!slug) {
-      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
-    }
-
-    if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (whatsapp.length < 10) {
-      return res.status(400).json({ error: "WhatsApp inválido." });
-    }
-
-    if (!numeros.length) {
-      return res.status(400).json({ error: "Escolha ao menos um número." });
-    }
-
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
-
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    if (sorteio.status && sorteio.status !== "ativo") {
-      return res.status(400).json({ error: "Este sorteio não está disponível." });
-    }
-
-    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
-    if (invalidMessage) {
-      return res.status(400).json({ error: invalidMessage });
-    }
-
-    cleanupExpiredReservations(db);
-
-    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
-    const conflicts = numeros.filter((n) => unavailable.includes(n));
-
-    if (conflicts.length) {
-      return res.status(409).json({
-        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
-        conflicts,
-      });
-    }
-
-    const cliente = upsertCliente(db, { nome, whatsapp });
-
-    const expiresAt = bloco
-      ? addMinutes(new Date(), 60 * 24 * 365).toISOString()
-      : addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString();
-
-    const reserva = createReservaRecord({
-      db,
-      sorteio,
-      cliente,
-      nome,
-      whatsapp,
-      numeros,
-      status: "reservado",
-      origem,
-      bloco,
-      observacao,
-      expiresAt,
-    });
-
-    await writeDb(db);
-
-    res.status(201).json({
-      success: true,
-      reservaId: reserva.id,
-      status: reserva.status,
-      expiresAt: reserva.expiresAt,
-      numeros: reserva.numeros,
-      total: reserva.total,
-      cliente: {
-        nome: cliente.nome,
-        whatsapp: cliente.whatsapp,
-      },
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao reservar números." });
-  }
-});
-
-/**
- * =========================================================
- * PIX AUTOMÁTICO PAGAR.ME
- * =========================================================
- */
-app.post("/api/pix", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    if (!PAGARME_SECRET_KEY) {
-      return res.status(500).json({ error: "PAGARME_SECRET_KEY não configurada." });
-    }
-
-    const slug = String(req.body.slug || req.body.sorteioId || "").trim();
-    const nome = normalizeName(req.body.nome || "");
-    const whatsapp = normalizePhone(req.body.whatsapp || "");
-    const numeros = sanitizeReservedNumbers(req.body.numeros || []);
-    const document = getCustomerDocument(req);
-    const email = getCustomerEmail(req, whatsapp);
-
-    if (!slug) {
-      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
-    }
-
-    if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (whatsapp.length < 10) {
-      return res.status(400).json({ error: "WhatsApp inválido." });
-    }
-
-    if (!numeros.length) {
-      return res.status(400).json({ error: "Escolha ao menos um número." });
-    }
-
-    if (![11, 14].includes(String(document).length)) {
-      return res.status(400).json({
-        error: "CPF/CNPJ obrigatório para gerar PIX no Pagar.me.",
-      });
-    }
-
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    if (sorteio.status && sorteio.status !== "ativo") {
-      return res.status(400).json({ error: "Este sorteio não está disponível." });
-    }
-
-    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
-    if (invalidMessage) {
-      return res.status(400).json({ error: invalidMessage });
-    }
-
-    cleanupExpiredReservations(db);
-
-    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
-    const conflicts = numeros.filter((n) => unavailable.includes(n));
-
-    if (conflicts.length) {
-      return res.status(409).json({
-        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
-        conflicts,
-      });
-    }
-
-    const cliente = upsertCliente(db, { nome, whatsapp });
-
-    const reserva = createReservaRecord({
-      db,
-      sorteio,
-      cliente,
-      nome,
-      whatsapp,
-      numeros,
-      status: "reservado",
-      origem: "site",
-      bloco: false,
-      observacao: "",
-      expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
-    });
-
-    const phoneParts = getPhonePartsForPagarme(whatsapp);
-    const amount = Math.round(Number(reserva.total || 0) * 100);
-
-    const orderBody = {
-      items: [
-        {
-          amount,
-          description: `Compra de números - ${sorteio.title}`,
-          quantity: 1,
-          code: reserva.id,
-        },
-      ],
-      customer: {
-        name: nome,
-        email,
-        document,
-        type: getCustomerTypeFromDocument(document),
-        phones: {
-          mobile_phone: {
-            country_code: phoneParts.country_code,
-            area_code: phoneParts.area_code,
-            number: phoneParts.number,
-          },
-        },
-      },
-      payments: [
-        {
-          payment_method: "pix",
-          pix: {
-            expires_in: RESERVATION_EXPIRES_MINUTES * 60,
-            additional_information: [
-              { name: "Sorteio", value: sorteio.title },
-              { name: "Números", value: numeros.join(", ") },
-            ],
-          },
-        },
-      ],
-      metadata: {
-        reserva_id: reserva.id,
-        sorteio_id: sorteio.id,
-        sorteio_slug: sorteio.slug,
-        numeros: numeros.join(","),
-      },
-    };
-
-    const pagarmeRes = await fetch(`${PAGARME_API_URL}/orders`, {
-      method: "POST",
-      headers: {
-        Authorization: pagarmeBasicAuth(),
-        "Content-Type": "application/json",
-        accept: "application/json",
-      },
-      body: JSON.stringify(orderBody),
-    });
-
-    const pagarmeData = await pagarmeRes.json();
-
-    if (!pagarmeRes.ok) {
-      db.reservas = db.reservas.filter((r) => r.id !== reserva.id);
-      await writeDb(db);
-
-      return res.status(500).json({
-        error: pagarmeData?.message || "Erro ao criar cobrança PIX no Pagar.me.",
-        details: pagarmeData,
-      });
-    }
-
-    const charge = pagarmeData?.charges?.[0] || {};
-    const lastTransaction = charge?.last_transaction || {};
-
-    const pagamento = {
-      id: generateId("pag"),
-      reservaId: reserva.id,
-      sorteioId: sorteio.id,
-      clienteId: cliente.id,
-      nome,
-      whatsapp,
-      numeros,
-      valor: reserva.total,
-      forma: "pix",
-      provider: "pagarme",
-      providerOrderId: pagarmeData?.id || "",
-      providerChargeId: charge?.id || "",
-      providerTransactionId: lastTransaction?.id || "",
-      pixCopiaECola:
-        lastTransaction?.qr_code ||
-        lastTransaction?.qr_code_text ||
-        "",
-      qrCodeBase64: lastTransaction?.qr_code_url || "",
-      status: "pendente",
-      raw: pagarmeData,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      expiresAt: reserva.expiresAt,
-    };
-
-    db.pagamentos.push(pagamento);
-    await writeDb(db);
-
-    return res.status(201).json({
-      success: true,
-      reservaId: reserva.id,
-      pagamentoId: pagamento.id,
-      status: pagamento.status,
-      pixCopiaECola: pagamento.pixCopiaECola,
-      pixCode: pagamento.pixCopiaECola,
-      copiaecola: pagamento.pixCopiaECola,
-      qrCodeBase64: pagamento.qrCodeBase64,
-      expirationDate: pagamento.expiresAt,
-      total: pagamento.valor,
-      providerOrderId: pagamento.providerOrderId,
-    });
-  } catch (err) {
-    console.error("Erro /api/pix:", err);
-    return res.status(500).json({ error: "Erro ao gerar PIX" });
-  }
-});
-
-/**
- * =========================================================
- * WEBHOOK PAGAR.ME
- * =========================================================
- */
-app.post("/api/webhooks/pagarme", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const event = req.body;
-    const eventType = event?.type || "";
-    const data = event?.data || {};
-
-    if (!["order.paid", "charge.paid"].includes(eventType)) {
-      return res.status(200).json({ received: true, ignored: true });
-    }
-
-    let providerOrderId = "";
-    let providerChargeId = "";
-
-    if (eventType === "order.paid") {
-      providerOrderId = data?.id || "";
-      providerChargeId = data?.charges?.[0]?.id || "";
-    }
-
-    if (eventType === "charge.paid") {
-      providerChargeId = data?.id || "";
-      providerOrderId = data?.order?.id || "";
-    }
-
-    const pagamento = db.pagamentos.find(
-      (p) =>
-        (providerOrderId && p.providerOrderId === providerOrderId) ||
-        (providerChargeId && p.providerChargeId === providerChargeId)
-    );
-
-    if (!pagamento) {
-      return res.status(200).json({ received: true, matched: false });
-    }
-
-    pagamento.status = "pago";
-    pagamento.updatedAt = nowIso();
-    pagamento.webhookPayload = event;
-
-    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
-    if (reserva) {
-      reserva.status = "pago";
-      reserva.updatedAt = nowIso();
-    }
-
-    await writeDb(db);
-
-    return res.status(200).json({ received: true, matched: true });
-  } catch (error) {
-    console.error("Webhook Pagar.me:", error);
-    return res.status(500).json({ error: "Erro no webhook Pagar.me." });
-  }
-});
-
-/**
- * =========================================================
- * CONFIRMAÇÃO MANUAL DE PAGAMENTO
- * =========================================================
- */
-app.post("/api/pagamentos/:id/confirmar", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const pagamento = db.pagamentos.find((p) => p.id === id);
-    if (!pagamento) {
-      return res.status(404).json({ error: "Pagamento não encontrado." });
-    }
-
-    pagamento.status = "pago";
-    pagamento.updatedAt = nowIso();
-
-    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
-    if (reserva) {
-      reserva.status = "pago";
-      reserva.updatedAt = nowIso();
-
-      if (!reserva.bloco && !["site", "manual"].includes(String(reserva.origem || "").toLowerCase())) {
-        splitBlockIfNeeded(db, { id: reserva.sorteioId, price: reserva.valorNumero || 0 }, reserva.origem, reserva.numeros || []);
-      }
-    }
-
-    await writeDb(db);
-
-    res.json({
-      success: true,
-      pagamento,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao confirmar pagamento." });
-  }
-});
-
-/**
- * =========================================================
- * ADMIN / RESUMO
- * =========================================================
- */
-app.get("/api/admin/sorteios/:id/resumo", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    cleanupExpiredReservations(db);
-    await writeDb(db);
-
-    const reservas = db.reservas.filter((r) => r.sorteioId === sorteio.id);
-    const pagamentos = db.pagamentos.filter((p) => p.sorteioId === sorteio.id);
-
-    const pagos = pagamentos.filter((p) => p.status === "pago");
-    const pendentes = pagamentos.filter((p) => p.status === "pendente");
-    const reservadosAtivos = reservas.filter(
-      (r) => r.status === "reservado" && !isExpired(r.expiresAt)
-    );
-
-    const numerosPagos = [...new Set(pagos.flatMap((p) => p.numeros))];
-    const numerosReservados = [...new Set(reservadosAtivos.flatMap((r) => r.numeros))];
-
-    const arrecadado = pagos.reduce((acc, p) => acc + Number(p.valor || 0), 0);
-
-    res.json({
-      sorteio: getSorteioDisplay(sorteio, db),
-      metricas: {
-        totalNumeros: sorteio.totalNumbers,
-        vendidos: numerosPagos.length,
-        reservados: numerosReservados.length,
-        disponiveis:
-          Number(sorteio.totalNumbers) -
-          [...new Set([...numerosPagos, ...numerosReservados])].length,
-        arrecadado: Number(arrecadado.toFixed(2)),
-        pagamentosPendentes: pendentes.length,
-        pagamentosPagos: pagos.length,
-      },
-      participantes: [...reservas]
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .map((r) => ({
-          id: r.id,
-          nome: r.nome,
-          whatsapp: r.whatsapp,
-          numeros: r.numeros,
-          numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
-          total: r.total,
-          status: r.status,
-          origem: r.origem || "site",
-          bloco: Boolean(r.bloco),
-          observacao: r.observacao || "",
-          createdAt: r.createdAt,
-          expiresAt: r.expiresAt,
-        })),
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar resumo do sorteio." });
-  }
-});
-
-/**
- * =========================================================
- * LISTAGEM DE PAGAMENTOS
- * =========================================================
- */
-app.get("/api/pagamentos", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const sorteioId = String(req.query.sorteioId || "").trim();
-
-    let pagamentos = db.pagamentos;
-
-    if (sorteioId) {
-      const sorteio = db.sorteios.find((s) => s.id === sorteioId || s.slug === sorteioId);
-      if (!sorteio) {
-        return res.status(404).json({ error: "Sorteio não encontrado." });
-      }
-      pagamentos = pagamentos.filter((p) => p.sorteioId === sorteio.id);
-    }
-
-    pagamentos = pagamentos.sort(
-      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-    );
-
-    res.json(pagamentos);
-  } catch {
-    res.status(500).json({ error: "Erro ao listar pagamentos." });
-  }
-});
-
-/**
- * =========================================================
- * EXPORTAÇÃO / LISTA PARTICIPANTES
- * =========================================================
- */
-app.get("/api/admin/sorteios/:id/participantes", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    cleanupExpiredReservations(db);
-    await writeDb(db);
-
-    const reservas = db.reservas
-      .filter((r) => r.sorteioId === sorteio.id)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    res.json(
-      reservas.map((r) => ({
-        id: r.id,
-        nome: r.nome,
-        whatsapp: r.whatsapp,
-        numeros: r.numeros,
-        numerosTexto: r.numerosTexto || compactNumbers(r.numeros || []),
-        total: r.total,
-        status: r.status,
-        origem: r.origem || "site",
-        bloco: Boolean(r.bloco),
-        observacao: r.observacao || "",
-        createdAt: r.createdAt,
-        expiresAt: r.expiresAt,
-      }))
-    );
-  } catch {
-    res.status(500).json({ error: "Erro ao carregar participantes." });
-  }
-});
-
-/**
- * =========================================================
- * ADMIN / PARTICIPANTE MANUAL COM BLOCOS
- * =========================================================
- */
-app.post("/api/admin/sorteios/:id/participantes/manual", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-
-    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    const nome = normalizeName(req.body.nome || "");
-    const whatsapp = normalizePhone(req.body.whatsapp || req.body.telefone || "");
-    const origem = String(req.body.origem || "manual").trim().toLowerCase() || "manual";
-    const bloco = Boolean(req.body.bloco);
-    const observacao = String(req.body.observacao || "").trim();
-    const status = String(req.body.status || "reservado").trim().toLowerCase() === "pago"
-      ? "pago"
-      : "reservado";
-
-    let numeros = [];
-    if (Array.isArray(req.body.numeros)) {
-      numeros = sanitizeReservedNumbers(req.body.numeros);
-    } else {
-      numeros = parseNumbersAdvanced(req.body.numeros || "");
-    }
-
-    if (!nome) {
-      return res.status(400).json({ error: "Nome é obrigatório." });
-    }
-
-    if (whatsapp.length < 8) {
-      return res.status(400).json({ error: "Telefone é obrigatório." });
-    }
-
-    if (!numeros.length) {
-      return res.status(400).json({ error: "Informe os números." });
-    }
-
-    const invalidMessage = validateNumerosForSorteio(sorteio, numeros);
-    if (invalidMessage) {
-      return res.status(400).json({ error: invalidMessage });
-    }
-
-    cleanupExpiredReservations(db);
-
-    if (!bloco && !["site", "manual"].includes(origem)) {
-      splitBlockIfNeeded(db, sorteio, origem, numeros);
-    }
-
-    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
-    const conflicts = numeros.filter((n) => unavailable.includes(n));
-
-    if (conflicts.length) {
-      return res.status(409).json({
-        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
-        conflicts,
-      });
-    }
-
-    const cliente = upsertCliente(db, { nome, whatsapp });
-
-    const expiresAt =
-      status === "reservado"
-        ? bloco
-          ? addMinutes(new Date(), 60 * 24 * 365).toISOString()
-          : addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString()
-        : null;
-
-    const reserva = createReservaRecord({
-      db,
-      sorteio,
-      cliente,
-      nome,
-      whatsapp,
-      numeros,
-      status,
-      origem,
-      bloco,
-      observacao,
-      expiresAt,
-    });
-
-    if (status === "pago") {
-      db.pagamentos.push({
-        id: generateId("pag"),
-        reservaId: reserva.id,
-        sorteioId: sorteio.id,
-        clienteId: cliente.id,
-        nome,
-        whatsapp,
-        numeros,
-        valor: reserva.total,
-        forma: "manual",
-        pixCopiaECola: "",
-        qrCodeBase64: "",
-        status: "pago",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-        expiresAt: null,
-      });
-    }
-
-    await writeDb(db);
-
-    res.status(201).json({
-      success: true,
-      reserva,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao cadastrar participante manual." });
-  }
-});
-
-app.delete("/api/admin/participantes/:id", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { id } = req.params;
-    const reserva = db.reservas.find((r) => r.id === id);
-
-    if (!reserva) {
-      return res.status(404).json({ error: "Participante não encontrado." });
-    }
-
-    db.reservas = db.reservas.filter((r) => r.id !== id);
-    db.pagamentos = db.pagamentos.filter((p) => p.reservaId !== id);
-
-    await writeDb(db);
-
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ error: "Erro ao excluir participante." });
-  }
-});
-
-/**
- * =========================================================
- * MEUS NÚMEROS
- * =========================================================
- */
-app.get("/api/meus-numeros/:slug", async (req, res) => {
-  try {
-    let db = await readDb();
-    db = migrateDb(db);
-
-    const { slug } = req.params;
-    const whatsapp = normalizePhone(req.query.whatsapp || "");
-
-    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
-
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    if (whatsapp.length < 8) {
-      return res.status(400).json({ error: "Digite seu telefone." });
-    }
-
-    const items = db.reservas.filter(
-      (r) =>
-        r.sorteioId === sorteio.id &&
-        normalizePhone(r.whatsapp) === whatsapp &&
-        r.status !== "expirado"
-    );
-
-    const numeros = [...new Set(items.flatMap((i) => i.numeros || []).map(Number))].sort(
-      (a, b) => a - b
-    );
-
-    res.json({
-      nome: items[0]?.nome || "",
-      numeros,
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao consultar." });
-  }
-});
-
-/**
- * =========================================================
- * FALLBACK
- * =========================================================
- */
-app.use((req, res) => {
-  res.status(404).json({ error: "Rota não encontrada." });
-});
-
-/**
- * =========================================================
- * START
- * =========================================================
- */
-app.listen(PORT, () => {
-  console.log(`Servidor rodando em: http://localhost:${PORT}`);
-});
+        @keyframes pulseGlow {
+          0% { box-shadow: 0 10px 24px rgba(16,185,129,0.18); transform: translateY(0); }
+          50% { box-shadow: 0 16px 28px rgba(16,185,129,0.28); transform: translateY(-1px); }
+          100% { box-shadow: 0 10px 24px rgba(16,185,129,0.18); transform: translateY(0); }
+        }
+
+        @keyframes quickPulse {
+          0% { transform: scale(1); }
+          50% { transform: scale(1.01); }
+          100% { transform: scale(1); }
+        }
+
+        @keyframes floatWhatsapp {
+          0% { transform: translateY(0); }
+          50% { transform: translateY(-3px); }
+          100% { transform: translateY(0); }
+        }
+      `}</style>
+
+      {myNumbersOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => setMyNumbersOpen(false)}
+        >
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.modalTitle}>Meus números</div>
+              <button
+                style={styles.closeBtn}
+                onClick={() => setMyNumbersOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Telefone cadastrado</label>
+              <input
+                style={styles.input}
+                value={formatPhone(myNumbersPhone)}
+                onChange={(e) => setMyNumbersPhone(onlyDigits(e.target.value))}
+                placeholder="(00) 00000-0000"
+              />
+            </div>
+
+            <button style={styles.greenWideButton} onClick={searchMyNumbers}>
+              {myNumbersLoading ? "Pesquisando..." : "Buscar números"}
+            </button>
+
+            {myNumbersResult ? (
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.resultBox}>
+                  <div style={styles.resultName}>
+                    {myNumbersResult?.nome || "Cliente"}
+                  </div>
+                  <div style={{ marginTop: 8, lineHeight: 1.5, color: "#344054" }}>
+                    {(myNumbersResult?.numeros || []).length
+                      ? myNumbersResult.numeros
+                          .map((n) => `N° ${formatNumberLabel(n)}`)
+                          .join(", ")
+                      : "Nenhum número encontrado."}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {paymentOpen && (
+        <div
+          style={styles.paymentOverlay}
+          onClick={() => setPaymentOpen(false)}
+        >
+          <div
+            style={styles.paymentSheet}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.paymentHeader}>
+              <div>
+                <div style={styles.paymentTitle}>Finalizar pagamento</div>
+                <div style={styles.paymentSub}>
+                  {selectedNumbers.length} número(s) • {formatCurrency(totalValue)}
+                </div>
+              </div>
+
+              <button
+                style={styles.closeBtn}
+                onClick={() => setPaymentOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            {!pixData ? (
+              <>
+                <div style={styles.cartNumbersBoxModal}>
+                  <div style={styles.cartNumbersLabel}>Seus números</div>
+                  <div style={styles.cartNumbersInline}>
+                    {selectedNumbers.map((n) => (
+                      <span key={n} style={styles.cartNumberPillModal}>
+                        {formatNumberLabel(n)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Nome</label>
+                  <input
+                    style={styles.input}
+                    value={customer.nome}
+                    onChange={(e) => handleCustomerChange("nome", e.target.value)}
+                    placeholder="Digite seu nome"
+                  />
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Celular</label>
+                  <input
+                    style={styles.input}
+                    value={formatPhone(customer.whatsapp)}
+                    onChange={(e) =>
+                      handleCustomerChange("whatsapp", e.target.value)
+                    }
+                    placeholder="(00) 00000-0000"
+                  />
+                </div>
+
+                {erro ? <div style={styles.errorBox}>{erro}</div> : null}
+
+                <div style={styles.modalActions}>
+                  <button style={styles.modalGhostBtn} onClick={clearSelection}>
+                    Limpar seleção
+                  </button>
+
+                  <button
+                    style={styles.payBtn}
+                    onClick={handlePix}
+                    disabled={submittingPix}
+                  >
+                    {submittingPix ? "Gerando pagamento..." : "Gerar PIX"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div style={styles.pixModalContent}>
+                <div style={styles.orangeTitle}>Aguardando o pagamento</div>
+                <div style={styles.helpText}>
+                  Finalize agora pelo PIX para garantir seus números.
+                </div>
+
+                {pixData?.qrCodeBase64 ? (
+                  <div style={{ textAlign: "center", marginBottom: 16 }}>
+                    <img
+                      src={
+                        pixData.qrCodeBase64.startsWith("data:image")
+                          ? pixData.qrCodeBase64
+                          : `data:image/png;base64,${pixData.qrCodeBase64}`
+                      }
+                      alt="QR Code PIX"
+                      style={styles.qrImage}
+                    />
+                  </div>
+                ) : null}
+
+                <div style={styles.pixRow}>
+                  <span>Nome</span>
+                  <span>CASA PREMIADA</span>
+                </div>
+
+                <div style={styles.pixRow}>
+                  <span>Valor total</span>
+                  <span>{formatCurrency(totalValue)}</span>
+                </div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Chave PIX</label>
+                  <div style={styles.copyRow}>
+                    <input
+                      readOnly
+                      style={{ ...styles.input, marginBottom: 0 }}
+                      value={
+                        pixData?.pixCopiaECola ||
+                        pixData?.pixCode ||
+                        pixData?.copiaecola ||
+                        ""
+                      }
+                    />
+                    <button style={styles.copyMiniBtn} onClick={copyPixCode}>
+                      {copiedPix ? "Copiado" : "Copiar"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {contactOpen && showFloatingCta && (
+        <div style={styles.contactWrap}>
+          <div style={styles.contactBox}>
+            <a
+              href={whatsappLink}
+              target="_blank"
+              rel="noreferrer"
+              style={styles.contactPrimary}
+            >
+              💬 Falar com o organizador
+            </a>
+
+            <div style={styles.contactPhone}>
+              📞 {formatWhatsappContact(ORGANIZER_WHATSAPP)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={styles.topBar}>
+        <div style={styles.logoArea}>
+          {sorteio?.logoUrl && logoVisible ? (
+            <img
+              src={sorteio.logoUrl}
+              alt="Logo"
+              style={styles.logoImg}
+              onError={() => setLogoVisible(false)}
+            />
+          ) : (
+            <div style={styles.logoFallback}>CASA PREMIADA</div>
+          )}
+        </div>
+
+        <button style={styles.topAction} onClick={() => setMyNumbersOpen(true)}>
+          <span style={styles.topActionIcon}>👁️🔎</span>
+          <span>Meus números</span>
+        </button>
+      </div>
+
+      <div style={styles.container}>
+        {erro && !sorteio ? (
+          <div style={styles.card}>
+            <div style={styles.description}>{erro}</div>
+          </div>
+        ) : null}
+
+        <div style={styles.heroCard}>
+          <div style={styles.heroLogoWrap}>
+            {sorteio?.logoUrl && logoVisible ? (
+              <img
+                src={sorteio.logoUrl}
+                alt="Logo"
+                style={styles.heroLogoImg}
+                onError={() => setLogoVisible(false)}
+              />
+            ) : (
+              <div style={styles.heroLogoFallback}>CASA PREMIADA</div>
+            )}
+          </div>
+
+          <img src={heroImage} alt={title} style={styles.heroImage} />
+
+          <div style={styles.blackInfoBar}>
+            <div style={styles.infoMiniBox}>
+              <div style={styles.infoLabel}>Valor por número</div>
+              <div style={styles.infoValue}>{formatCurrency(price)}</div>
+            </div>
+
+            <div style={styles.infoTitleBox}>
+              <div style={styles.infoLabel}>Prêmio</div>
+              <div style={styles.infoValueMain}>{title}</div>
+            </div>
+
+            <div style={styles.infoMiniBox}>
+              <div style={styles.infoLabel}>Data sorteio</div>
+              <div style={styles.infoValueSmall}>{formatDateTime(sorteio?.drawDate)}</div>
+            </div>
+          </div>
+        </div>
+
+        {description ? (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Descrição do prêmio</div>
+            <div style={styles.description}>{description}</div>
+          </div>
+        ) : null}
+
+        <div ref={numbersRef} />
+
+        <div style={styles.legendHint}>Toque no número que deseja comprar 👇</div>
+
+        <div style={styles.legendCard}>
+          <div style={styles.legendRow}>
+            <div style={{ ...styles.legendItem, background: "#e2e8f0", color: "#1f2937" }}>
+              Disponíveis
+            </div>
+            <div style={{ ...styles.legendItem, background: "#111827", color: "#fff" }}>
+              Reservados
+            </div>
+            <div style={{ ...styles.legendItem, background: "#166534", color: "#fff" }}>
+              Comprados
+            </div>
+          </div>
+        </div>
+
+        <div ref={quickCardRef} style={styles.quickCard}>
+          <div style={styles.quickTopLine}>
+            <span style={styles.quickIcon}>⚡</span>
+            <div>
+              <div style={styles.quickTitle}>Compra rápida</div>
+              <div style={styles.quickText}>Escolha aleatória dos números</div>
+            </div>
+          </div>
+
+          <div style={styles.quickGrid}>
+            <button style={styles.quickBtn} onClick={() => pickRandom(2)}>
+              +2
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(5)}>
+              +5
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(10)}>
+              +10
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(15)}>
+              +15
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(20)}>
+              +20
+            </button>
+          </div>
+        </div>
+
+        <div ref={numberGridRef} style={styles.numberGrid}>
+          {Array.from({ length: totalNumbers }, (_, index) => {
+            const num = index + 1;
+            const isReserved = reservedSet.has(num);
+            const isPaid = paidSet.has(num);
+            const isUnavailable = unavailableNumbers.has(num);
+            const isSelected = selectedNumbers.includes(num);
+
+            let stateStyle = {};
+            if (isPaid) stateStyle = styles.numberPaid;
+            else if (isReserved) stateStyle = styles.numberUnavailable;
+            else if (isSelected) stateStyle = styles.numberActive;
+
+            return (
+              <button
+                key={num}
+                onClick={() => toggleNumber(num)}
+                disabled={isUnavailable}
+                style={{
+                  ...styles.numberBtn,
+                  ...stateStyle,
+                }}
+              >
+                {String(num).padStart(3, "0")}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {selectedNumbers.length > 0 ? (
+        <div style={styles.cartBar}>
+          <div style={styles.cartTopRow}>
+            <span style={styles.cartCount}>
+              {selectedNumbers.length} número(s)
+            </span>
+            <span style={styles.cartTotal}>{formatCurrency(totalValue)}</span>
+          </div>
+
+          <div style={styles.cartNumbersInline}>
+            {selectedNumbers.map((n) => (
+              <span key={n} style={styles.cartNumberPill}>
+                {formatNumberLabel(n)}
+              </span>
+            ))}
+          </div>
+
+          <div style={styles.cartActionRow}>
+            <button style={styles.cartClearBtn} onClick={clearSelection}>
+              Limpar seleção
+            </button>
+
+            <button style={styles.cartPayBtn} onClick={openPayment}>
+              Continuar para pagamento
+            </button>
+          </div>
+        </div>
+      ) : showFloatingCta ? (
+        <div style={styles.floatingWrap}>
+          <button style={styles.floatingBtn} onClick={scrollToNumbers}>
+            <span>✨ Escolher números</span>
+            <span style={styles.floatingArrows}>↓ ↓ ↓</span>
+          </button>
+        </div>
+      ) : null}
+
+      {showFloatingCta ? (
+        <button
+          style={styles.whatsappFloat}
+          onClick={() => setContactOpen((prev) => !prev)}
+        >
+          💬
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background: "#eef2ef",
+    paddingBottom: 150,
+    fontFamily: "Arial, sans-serif",
+    position: "relative",
+  },
+  topBar: {
+    position: "sticky",
+    top: 0,
+    zIndex: 20,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "12px 14px",
+    background: "#ffffffeb",
+    backdropFilter: "blur(8px)",
+    borderBottom: "1px solid #e5e7eb",
+  },
+  logoArea: {
+    minHeight: 52,
+    display: "flex",
+    alignItems: "center",
+  },
+  logoImg: {
+    height: 48,
+    objectFit: "contain",
+  },
+  logoFallback: {
+    fontSize: 18,
+    fontWeight: 600,
+    color: "#111827",
+    lineHeight: 1.1,
+  },
+  topAction: {
+    border: "none",
+    background: "#15803d",
+    color: "#fff",
+    padding: "10px 12px",
+    borderRadius: 14,
+    fontSize: 13,
+    fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  topActionIcon: {
+    fontSize: 14,
+    lineHeight: 1,
+  },
+  container: {
+    maxWidth: 620,
+    margin: "0 auto",
+    padding: 14,
+  },
+  heroCard: {
+    overflow: "hidden",
+    borderRadius: 26,
+    background: "#fff",
+    boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
+    marginBottom: 16,
+    position: "relative",
+  },
+  heroLogoWrap: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    zIndex: 3,
+    background: "rgba(255,255,255,0.92)",
+    borderRadius: 16,
+    padding: "8px 10px",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.10)",
+    backdropFilter: "blur(8px)",
+  },
+  heroLogoImg: {
+    height: 42,
+    objectFit: "contain",
+    display: "block",
+  },
+  heroLogoFallback: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  heroImage: {
+    width: "100%",
+    minHeight: 320,
+    maxHeight: 620,
+    display: "block",
+    objectFit: "cover",
+    background: "#ddd",
+  },
+  blackInfoBar: {
+    background: "#111111",
+    color: "#fff",
+    padding: 16,
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 10,
+  },
+  infoMiniBox: {},
+  infoTitleBox: {},
+  infoLabel: {
+    fontSize: 11,
+    color: "#bdbdbd",
+    textTransform: "uppercase",
+    marginBottom: 8,
+    fontWeight: 500,
+  },
+  infoValue: {
+    fontSize: 16,
+    fontWeight: 600,
+    lineHeight: 1.25,
+  },
+  infoValueMain: {
+    fontSize: 18,
+    fontWeight: 600,
+    lineHeight: 1.15,
+  },
+  infoValueSmall: {
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.35,
+  },
+  card: {
+    background: "#fff",
+    borderRadius: 24,
+    padding: 18,
+    boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 600,
+    marginBottom: 10,
+    color: "#111827",
+  },
+  description: {
+    fontSize: 16,
+    lineHeight: 1.55,
+    color: "#344054",
+    fontWeight: 400,
+  },
+  legendHint: {
+    color: "#667085",
+    fontSize: 14,
+    marginBottom: 10,
+    fontWeight: 400,
+  },
+  legendCard: {
+    background: "#fff",
+    borderRadius: 16,
+    padding: 12,
+    border: "1px solid #e5e7eb",
+    marginBottom: 14,
+  },
+  legendRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 8,
+  },
+  legendItem: {
+    borderRadius: 10,
+    padding: "10px 8px",
+    textAlign: "center",
+    fontSize: 12,
+    fontWeight: 500,
+  },
+  quickCard: {
+    background: "linear-gradient(180deg, #fffdf6 0%, #fff8dc 100%)",
+    border: "1.5px solid #f4d36f",
+    borderRadius: 22,
+    padding: 14,
+    marginBottom: 16,
+    boxShadow: "0 8px 18px rgba(244,211,111,0.18)",
+    animation: "quickPulse 2s infinite",
+  },
+  quickTopLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 12,
+  },
+  quickIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    background: "#f6c948",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 20,
+    boxShadow: "0 8px 18px rgba(246,201,72,0.35)",
+  },
+  quickTitle: {
+    fontSize: 17,
+    fontWeight: 600,
+    lineHeight: 1.1,
+    color: "#111827",
+  },
+  quickText: {
+    fontSize: 13,
+    color: "#475467",
+    marginTop: 2,
+    fontWeight: 400,
+  },
+  quickGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, 1fr)",
+    gap: 8,
+  },
+  quickBtn: {
+    minHeight: 42,
+    border: "none",
+    borderRadius: 14,
+    background: "#f6c948",
+    color: "#111827",
+    fontWeight: 600,
+    fontSize: 17,
+  },
+  numberGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(6, 1fr)",
+    gap: 7,
+  },
+  numberBtn: {
+    minHeight: 42,
+    borderRadius: 12,
+    border: "1.5px solid #d0d5dd",
+    background: "#fff",
+    color: "#111827",
+    fontSize: 13,
+    fontWeight: 500,
+    boxShadow: "0 4px 10px rgba(15,23,42,0.04)",
+  },
+  numberUnavailable: {
+    background: "#111827",
+    color: "#fff",
+    border: "1.5px solid #111827",
+  },
+  numberPaid: {
+    background: "#166534",
+    color: "#fff",
+    border: "1.5px solid #166534",
+  },
+  numberActive: {
+    background: "linear-gradient(135deg, #10b981, #0f8f4c)",
+    color: "#fff",
+    border: "1.5px solid #0f8f4c",
+    boxShadow: "0 10px 18px rgba(16,185,129,0.20)",
+  },
+  helpText: {
+    color: "#667085",
+    fontSize: 15,
+    lineHeight: 1.5,
+    marginBottom: 14,
+    fontWeight: 400,
+  },
+  field: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginBottom: 12,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: 500,
+    color: "#344054",
+  },
+  input: {
+    width: "100%",
+    minHeight: 52,
+    border: "1px solid #d0d5dd",
+    borderRadius: 14,
+    padding: "0 14px",
+    fontSize: 16,
+    background: "#fff",
+  },
+  errorBox: {
+    background: "#fef3f2",
+    color: "#b42318",
+    border: "1px solid #fecdca",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    fontWeight: 400,
+  },
+  payBtn: {
+    flex: 1,
+    minHeight: 56,
+    border: "none",
+    borderRadius: 16,
+    background: "#15803d",
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: 600,
+  },
+  orangeTitle: {
+    fontSize: 24,
+    fontWeight: 600,
+    color: "#d97706",
+    marginBottom: 6,
+  },
+  qrImage: {
+    width: "100%",
+    maxWidth: 240,
+    borderRadius: 16,
+  },
+  pixRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    marginBottom: 12,
+    fontSize: 16,
+    color: "#344054",
+    fontWeight: 400,
+  },
+  copyRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: 8,
+    alignItems: "center",
+  },
+  copyMiniBtn: {
+    minHeight: 52,
+    border: "none",
+    borderRadius: 14,
+    background: "#f4d36f",
+    padding: "0 16px",
+    fontWeight: 600,
+  },
+  sendBtn: {
+    display: "block",
+    textAlign: "center",
+    textDecoration: "none",
+    background: "#15803d",
+    color: "#fff",
+    borderRadius: 14,
+    padding: "16px",
+    fontSize: 17,
+    fontWeight: 600,
+    marginTop: 12,
+  },
+  floatingWrap: {
+    position: "fixed",
+    left: 14,
+    right: 14,
+    bottom: 16,
+    zIndex: 30,
+  },
+  floatingBtn: {
+    width: "100%",
+    minHeight: 58,
+    border: "none",
+    borderRadius: 18,
+    background: "linear-gradient(135deg, #10b981, #0f8f4c)",
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: 600,
+    boxShadow: "0 14px 24px rgba(16,185,129,0.28)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0 18px",
+    animation: "pulseGlow 1.8s infinite",
+  },
+  floatingArrows: {
+    animation: "floatArrows 1.1s infinite",
+    letterSpacing: 2,
+    fontSize: 16,
+  },
+  cartBar: {
+    position: "fixed",
+    left: 12,
+    right: 12,
+    bottom: 12,
+    zIndex: 40,
+    background: "#ffffff",
+    borderRadius: 24,
+    padding: 14,
+    boxShadow: "0 16px 30px rgba(15,23,42,0.14)",
+    border: "1px solid #eef2f6",
+  },
+  cartTopRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 10,
+  },
+  cartCount: {
+    fontSize: 14,
+    color: "#111827",
+    fontWeight: 500,
+  },
+  cartTotal: {
+    fontSize: 18,
+    color: "#15803d",
+    fontWeight: 600,
+  },
+  cartNumbersInline: {
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap",
+    marginBottom: 12,
+    maxHeight: 70,
+    overflowY: "auto",
+  },
+  cartNumberPill: {
+    background: "#eefaf3",
+    color: "#0f8f4c",
+    border: "1px solid #b7e4c7",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontWeight: 500,
+    fontSize: 12,
+  },
+  cartActionRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1.35fr",
+    gap: 10,
+  },
+  cartClearBtn: {
+    minHeight: 50,
+    borderRadius: 16,
+    border: "1px solid #d0d5dd",
+    background: "#fff",
+    color: "#111827",
+    fontWeight: 500,
+    fontSize: 15,
+  },
+  cartPayBtn: {
+    minHeight: 50,
+    borderRadius: 16,
+    border: "none",
+    background: "linear-gradient(135deg, #1db874, #149954)",
+    color: "#fff",
+    fontWeight: 600,
+    fontSize: 15,
+    boxShadow: "0 12px 22px rgba(16,185,129,0.20)",
+  },
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 100,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 520,
+    background: "#fff",
+    borderRadius: 22,
+    padding: 18,
+  },
+  paymentOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.52)",
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    zIndex: 120,
+  },
+  paymentSheet: {
+    width: "100%",
+    maxWidth: 620,
+    background: "#fff",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 18,
+    maxHeight: "90vh",
+    overflowY: "auto",
+    boxShadow: "0 -18px 40px rgba(0,0,0,0.18)",
+  },
+  paymentHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 14,
+  },
+  paymentTitle: {
+    fontSize: 21,
+    fontWeight: 600,
+    color: "#111827",
+  },
+  paymentSub: {
+    marginTop: 4,
+    color: "#667085",
+    fontSize: 14,
+    fontWeight: 400,
+  },
+  cartNumbersBoxModal: {
+    background: "#f8fafc",
+    border: "1px solid #eaecf0",
+    borderRadius: 18,
+    padding: 12,
+    marginBottom: 12,
+  },
+  cartNumbersLabel: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: "#344054",
+    marginBottom: 8,
+  },
+  cartNumberPillModal: {
+    background: "#ffffff",
+    color: "#0f8f4c",
+    border: "1px solid #ccebd8",
+    borderRadius: 999,
+    padding: "7px 11px",
+    fontWeight: 500,
+    fontSize: 12,
+  },
+  modalActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1.2fr",
+    gap: 10,
+    marginTop: 6,
+  },
+  modalGhostBtn: {
+    minHeight: 56,
+    borderRadius: 16,
+    border: "1px solid #d0d5dd",
+    background: "#fff",
+    color: "#111827",
+    fontSize: 15,
+    fontWeight: 500,
+  },
+  pixModalContent: {
+    paddingTop: 4,
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  modalTitle: {
+    fontSize: 20,
+    color: "#111827",
+    fontWeight: 600,
+  },
+  closeBtn: {
+    border: "none",
+    background: "transparent",
+    fontSize: 34,
+    lineHeight: 1,
+    color: "#667085",
+    fontWeight: 400,
+  },
+  greenWideButton: {
+    width: "100%",
+    minHeight: 56,
+    border: "none",
+    borderRadius: 16,
+    background: "#15803d",
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: 600,
+  },
+  resultBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: 16,
+    padding: 14,
+  },
+  resultName: {
+    color: "#111827",
+    fontSize: 16,
+    fontWeight: 600,
+  },
+  whatsappFloat: {
+    position: "fixed",
+    right: 14,
+    bottom: 96,
+    zIndex: 60,
+    width: 50,
+    height: 50,
+    borderRadius: 999,
+    border: "none",
+    background: "#16a34a",
+    color: "#fff",
+    fontSize: 24,
+    boxShadow: "0 12px 24px rgba(22,163,74,0.35)",
+    animation: "floatWhatsapp 1.8s infinite",
+  },
+  contactWrap: {
+    position: "fixed",
+    right: 14,
+    bottom: 154,
+    zIndex: 61,
+    width: "min(300px, calc(100vw - 28px))",
+  },
+  contactBox: {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 20,
+    padding: 12,
+    boxShadow: "0 16px 30px rgba(15,23,42,0.18)",
+  },
+  contactPrimary: {
+    display: "block",
+    textDecoration: "none",
+    textAlign: "center",
+    background: "#10b981",
+    color: "#fff",
+    borderRadius: 14,
+    padding: "14px 12px",
+    fontSize: 16,
+    fontWeight: 600,
+    marginBottom: 10,
+  },
+  contactPhone: {
+    border: "1px solid #d7dbe2",
+    borderRadius: 14,
+    padding: "12px 14px",
+    textAlign: "center",
+    color: "#344054",
+    fontSize: 15,
+    background: "#f8fafc",
+  },
+};
