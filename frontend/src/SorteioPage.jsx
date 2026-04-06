@@ -5,6 +5,7 @@ const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
 
 const STORAGE_KEY = "casa_premiada_cliente";
+const ORGANIZER_WHATSAPP = "+5516993537516";
 
 function onlyDigits(value = "") {
   return String(value).replace(/\D/g, "");
@@ -15,6 +16,20 @@ function formatPhone(value = "") {
   if (digits.length <= 2) return digits;
   if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function formatWhatsappContact(value = "") {
+  const digits = onlyDigits(value);
+
+  if (digits.length === 13 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`;
+  }
+
+  if (digits.length === 12 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`;
+  }
+
+  return value;
 }
 
 function formatCurrency(value) {
@@ -44,14 +59,12 @@ function safeArray(value) {
 export default function SorteioPage() {
   const { slug } = useParams();
 
-  const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState("");
   const [sorteio, setSorteio] = useState(null);
 
   const [selectedNumbers, setSelectedNumbers] = useState([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
-  const [hideFloatingCtas, setHideFloatingCtas] = useState(false);
 
   const [customer, setCustomer] = useState({
     nome: "",
@@ -66,6 +79,9 @@ export default function SorteioPage() {
   const [myNumbersPhone, setMyNumbersPhone] = useState("");
   const [myNumbersLoading, setMyNumbersLoading] = useState(false);
   const [myNumbersResult, setMyNumbersResult] = useState(null);
+
+  const [showFloatingCta, setShowFloatingCta] = useState(true);
+  const [logoVisible, setLogoVisible] = useState(true);
 
   const numbersRef = useRef(null);
   const quickCardRef = useRef(null);
@@ -90,21 +106,27 @@ export default function SorteioPage() {
     loadSorteio();
   }, [slug]);
 
+  useEffect(() => {
+    setLogoVisible(true);
+  }, [sorteio?.logoUrl]);
 
   useEffect(() => {
-    const target = quickCardRef.current;
-    if (!target) return;
+    if (!quickCardRef.current) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        setHideFloatingCtas(entry.isIntersecting);
+        setShowFloatingCta(!entry.isIntersecting);
+        if (entry.isIntersecting) {
+          setContactOpen(false);
+        }
       },
       {
         threshold: 0.2,
       }
     );
 
-    observer.observe(target);
+    observer.observe(quickCardRef.current);
+
     return () => observer.disconnect();
   }, [sorteio]);
 
@@ -119,7 +141,6 @@ export default function SorteioPage() {
 
   async function loadSorteio() {
     try {
-      setLoading(true);
       setErro("");
 
       const res = await fetch(`${API_URL}/api/sorteios/${slug}`);
@@ -132,8 +153,6 @@ export default function SorteioPage() {
       setSorteio(data);
     } catch (err) {
       setErro(err.message || "Erro ao carregar sorteio.");
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -155,15 +174,15 @@ export default function SorteioPage() {
 
   const unavailableNumbers = useMemo(() => {
     return new Set([...reservedNumbers, ...paidNumbers]);
-  }, [sorteio, reservedNumbers, paidNumbers]);
+  }, [reservedNumbers, paidNumbers]);
 
   const reservedSet = useMemo(() => new Set(reservedNumbers), [reservedNumbers]);
   const paidSet = useMemo(() => new Set(paidNumbers), [paidNumbers]);
 
   const totalValue = selectedNumbers.length * price;
 
-  const whatsappDigits = "5516993537516";
-  const whatsappLink = whatsappDigits ? `https://wa.me/${whatsappDigits}` : "";
+  const whatsappDigits = onlyDigits(ORGANIZER_WHATSAPP);
+  const whatsappLink = `https://wa.me/${whatsappDigits}`;
 
   function formatNumberLabel(num) {
     return String(num).padStart(3, "0");
@@ -535,49 +554,48 @@ export default function SorteioPage() {
                   </div>
                 </div>
 
-                {whatsappLink ? (
-                  <a
-                    href={whatsappLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={styles.sendBtn}
-                  >
-                    Enviar comprovante
-                  </a>
-                ) : null}
+                <a
+                  href={whatsappLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.sendBtn}
+                >
+                  Enviar comprovante
+                </a>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {contactOpen && !hideFloatingCtas && (
+      {contactOpen && showFloatingCta && (
         <div style={styles.contactWrap}>
           <div style={styles.contactBox}>
-            {whatsappLink ? (
-              <a
-                href={whatsappLink}
-                target="_blank"
-                rel="noreferrer"
-                style={styles.contactPrimary}
-              >
-                💬 Falar com o organizador
-              </a>
-            ) : null}
+            <a
+              href={whatsappLink}
+              target="_blank"
+              rel="noreferrer"
+              style={styles.contactPrimary}
+            >
+              💬 Falar com o organizador
+            </a>
 
-            {whatsappDigits ? (
-              <div style={styles.contactPhone}>📞 {formatPhone(whatsappDigits)}</div>
-            ) : (
-              <div style={styles.contactPhone}>WhatsApp não configurado</div>
-            )}
+            <div style={styles.contactPhone}>
+              📞 {formatWhatsappContact(ORGANIZER_WHATSAPP)}
+            </div>
           </div>
         </div>
       )}
 
       <div style={styles.topBar}>
         <div style={styles.logoArea}>
-          {sorteio?.logoUrl ? (
-            <img src={sorteio.logoUrl} alt="Logo" style={styles.logoImg} />
+          {sorteio?.logoUrl && logoVisible ? (
+            <img
+              src={sorteio.logoUrl}
+              alt="Logo"
+              style={styles.logoImg}
+              onError={() => setLogoVisible(false)}
+            />
           ) : (
             <div style={styles.logoFallback}>CASA PREMIADA</div>
           )}
@@ -598,8 +616,13 @@ export default function SorteioPage() {
 
         <div style={styles.heroCard}>
           <div style={styles.heroLogoWrap}>
-            {sorteio?.logoUrl ? (
-              <img src={sorteio.logoUrl} alt="Logo" style={styles.heroLogoImg} />
+            {sorteio?.logoUrl && logoVisible ? (
+              <img
+                src={sorteio.logoUrl}
+                alt="Logo"
+                style={styles.heroLogoImg}
+                onError={() => setLogoVisible(false)}
+              />
             ) : (
               <div style={styles.heroLogoFallback}>CASA PREMIADA</div>
             )}
@@ -632,22 +655,7 @@ export default function SorteioPage() {
           </div>
         ) : null}
 
-        <div
-          ref={numbersRef}
-          style={styles.sectionHeadlineAnimated}
-          onClick={scrollToNumbers}
-        >
-          <div style={styles.chooseHeadlineTop}>
-            <span style={styles.headlineBadge}>✨</span>
-            <span>Escolher números</span>
-          </div>
-
-          <div style={styles.chooseArrowWrap}>
-            <span style={styles.chooseArrow}>↓</span>
-            <span style={{ ...styles.chooseArrow, animationDelay: "0.15s" }}>↓</span>
-            <span style={{ ...styles.chooseArrow, animationDelay: "0.3s" }}>↓</span>
-          </div>
-        </div>
+        <div ref={numbersRef} />
 
         <div style={styles.legendHint}>Toque no número que deseja comprar 👇</div>
 
@@ -750,7 +758,7 @@ export default function SorteioPage() {
             </button>
           </div>
         </div>
-      ) : !hideFloatingCtas ? (
+      ) : showFloatingCta ? (
         <div style={styles.floatingWrap}>
           <button style={styles.floatingBtn} onClick={scrollToNumbers}>
             <span>✨ Escolher números</span>
@@ -759,7 +767,7 @@ export default function SorteioPage() {
         </div>
       ) : null}
 
-      {!hideFloatingCtas ? (
+      {showFloatingCta ? (
         <button
           style={styles.whatsappFloat}
           onClick={() => setContactOpen((prev) => !prev)}
@@ -915,45 +923,6 @@ const styles = {
     lineHeight: 1.55,
     color: "#344054",
     fontWeight: 400,
-  },
-  sectionHeadlineAnimated: {
-    margin: "24px 0 12px",
-    borderRadius: 22,
-    padding: "16px 18px 14px",
-    background: "linear-gradient(135deg, #1db874, #149954)",
-    color: "#fff",
-    cursor: "pointer",
-    animation: "pulseGlow 1.8s infinite",
-  },
-  chooseHeadlineTop: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    fontSize: 22,
-    fontWeight: 600,
-    lineHeight: 1.15,
-  },
-  headlineBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(255,255,255,0.16)",
-    border: "1px solid rgba(255,255,255,0.28)",
-    fontSize: 18,
-  },
-  chooseArrowWrap: {
-    display: "flex",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 8,
-  },
-  chooseArrow: {
-    fontSize: 18,
-    fontWeight: 700,
-    animation: "floatArrows 1.1s infinite",
   },
   legendHint: {
     color: "#667085",
