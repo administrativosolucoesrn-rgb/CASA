@@ -1,4 +1,3 @@
-
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -21,14 +20,18 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
 const PAGARME_API_URL = "https://api.pagar.me/core/v5";
 const PAGARME_DEFAULT_DOCUMENT = process.env.PAGARME_DEFAULT_DOCUMENT || "";
-const PAGARME_DEFAULT_EMAIL = process.env.PAGARME_DEFAULT_EMAIL || "pagamento@casapremiada.com";
+const PAGARME_DEFAULT_EMAIL =
+  process.env.PAGARME_DEFAULT_EMAIL || "pagamento@casapremiada.com";
 
 const PIX_KEY = process.env.PIX_KEY || "SEU_PIX_AQUI";
-const PIX_MERCHANT_NAME = process.env.PIX_MERCHANT_NAME || "CASA PREMIADA";
-const PIX_MERCHANT_CITY = process.env.PIX_MERCHANT_CITY || "RIBEIRAO PRETO";
-const PIX_DESCRIPTION = process.env.PIX_DESCRIPTION || "Pagamento Sorteio";
+const PIX_MERCHANT_NAME =
+  process.env.PIX_MERCHANT_NAME || "46.573.111 RAILANNY SILVA";
+const PIX_MERCHANT_CITY =
+  process.env.PIX_MERCHANT_CITY || "RIBEIRAO PRETO";
+const PIX_DESCRIPTION =
+  process.env.PIX_DESCRIPTION || "Pagamento Sorteio";
 const RESERVATION_EXPIRES_MINUTES = Number(
-  process.env.RESERVATION_EXPIRES_MINUTES || 30
+  process.env.RESERVATION_EXPIRES_MINUTES || 15
 );
 
 const DATA_DIR = path.join(__dirname, "data");
@@ -87,7 +90,6 @@ const upload = multer({
 function pagarmeBasicAuth() {
   return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
 }
-
 
 function normalizeDocument(value = "") {
   return String(value).replace(/\D/g, "").slice(0, 14);
@@ -416,6 +418,22 @@ function cleanupExpiredReservations(db) {
     return reserva;
   });
 
+  db.pagamentos = db.pagamentos.map((pagamento) => {
+    if (
+      pagamento.status === "pendente" &&
+      pagamento.expiresAt &&
+      isExpired(pagamento.expiresAt)
+    ) {
+      changed = true;
+      return {
+        ...pagamento,
+        status: "expirado",
+        updatedAt: nowIso(),
+      };
+    }
+    return pagamento;
+  });
+
   return changed;
 }
 
@@ -437,6 +455,23 @@ function cleanupExpiredReservationsForSorteio(sorteio, db) {
       };
     }
     return reserva;
+  });
+
+  db.pagamentos = db.pagamentos.map((pagamento) => {
+    if (
+      pagamento.sorteioId === sorteio.id &&
+      pagamento.status === "pendente" &&
+      pagamento.expiresAt &&
+      isExpired(pagamento.expiresAt)
+    ) {
+      changed = true;
+      return {
+        ...pagamento,
+        status: "expirado",
+        updatedAt: nowIso(),
+      };
+    }
+    return pagamento;
   });
 
   return changed;
@@ -630,6 +665,207 @@ function createReservaRecord({
 
   db.reservas.push(reserva);
   return reserva;
+}
+
+async function buildQrCodeBase64(text) {
+  if (!text) return "";
+  try {
+    return await QRCode.toDataURL(text, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 420,
+    });
+  } catch {
+    return "";
+  }
+}
+
+async function safeFetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = {};
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    data,
+  };
+}
+
+function mapProviderStatus(input = "") {
+  const status = String(input || "").toLowerCase();
+
+  if (
+    [
+      "paid",
+      "captured",
+      "approved",
+      "succeeded",
+      "success",
+      "processing_paid",
+    ].includes(status)
+  ) {
+    return "pago";
+  }
+
+  if (
+    [
+      "canceled",
+      "cancelled",
+      "failed",
+      "refused",
+      "expired",
+      "voided",
+    ].includes(status)
+  ) {
+    return "cancelado";
+  }
+
+  if (
+    [
+      "pending",
+      "waiting_payment",
+      "generated",
+      "processing",
+      "created",
+    ].includes(status)
+  ) {
+    return "pendente";
+  }
+
+  return "pendente";
+}
+
+async function syncPagamentoStatusFromProviderData(db, pagamento, providerPayload = {}) {
+  const charge = providerPayload?.charges?.[0] || providerPayload?.charge || {};
+  const lastTransaction = charge?.last_transaction || {};
+  const providerStatusRaw =
+    lastTransaction?.status ||
+    charge?.status ||
+    providerPayload?.status ||
+    "";
+
+  const nextStatus = mapProviderStatus(providerStatusRaw);
+  const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+
+  pagamento.raw = providerPayload;
+  pagamento.updatedAt = nowIso();
+
+  const providerPixCode =
+    lastTransaction?.qr_code ||
+    lastTransaction?.qr_code_text ||
+    pagamento.pixCopiaECola ||
+    "";
+
+  if (providerPixCode && !pagamento.pixCopiaECola) {
+    pagamento.pixCopiaECola = providerPixCode;
+  }
+
+  const generatedQr = await buildQrCodeBase64(providerPixCode || pagamento.pixCopiaECola);
+  if (generatedQr) {
+    pagamento.qrCodeBase64 = generatedQr;
+  }
+
+  if (nextStatus === "pago") {
+    pagamento.status = "pago";
+
+    if (reserva) {
+      reserva.status = "pago";
+      reserva.updatedAt = nowIso();
+
+      if (
+        !reserva.bloco &&
+        !["site", "manual"].includes(String(reserva.origem || "").toLowerCase())
+      ) {
+        splitBlockIfNeeded(
+          db,
+          { id: reserva.sorteioId, price: reserva.valorNumero || 0 },
+          reserva.origem,
+          reserva.numeros || []
+        );
+      }
+    }
+  } else if (nextStatus === "cancelado") {
+    pagamento.status = isExpired(pagamento.expiresAt) ? "expirado" : "cancelado";
+
+    if (reserva && reserva.status !== "pago") {
+      reserva.status = isExpired(reserva.expiresAt) ? "expirado" : "cancelado";
+      reserva.updatedAt = nowIso();
+    }
+  } else {
+    pagamento.status = isExpired(pagamento.expiresAt) ? "expirado" : "pendente";
+
+    if (reserva && reserva.status !== "pago") {
+      reserva.status = isExpired(reserva.expiresAt) ? "expirado" : "reservado";
+      reserva.updatedAt = nowIso();
+    }
+  }
+}
+
+async function fetchAndSyncPagarmePayment(db, pagamento) {
+  if (!PAGARME_SECRET_KEY) return pagamento;
+
+  let providerPayload = null;
+
+  if (pagamento.providerOrderId) {
+    const orderRes = await safeFetchJson(
+      `${PAGARME_API_URL}/orders/${encodeURIComponent(pagamento.providerOrderId)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: pagarmeBasicAuth(),
+          accept: "application/json",
+        },
+      }
+    );
+
+    if (orderRes.ok) {
+      providerPayload = orderRes.data;
+    }
+  }
+
+  if (!providerPayload && pagamento.providerChargeId) {
+    const chargeRes = await safeFetchJson(
+      `${PAGARME_API_URL}/charges/${encodeURIComponent(pagamento.providerChargeId)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: pagarmeBasicAuth(),
+          accept: "application/json",
+        },
+      }
+    );
+
+    if (chargeRes.ok) {
+      providerPayload = {
+        charge: chargeRes.data,
+        charges: [chargeRes.data],
+        status: chargeRes.data?.status || "",
+      };
+    }
+  }
+
+  if (providerPayload) {
+    await syncPagamentoStatusFromProviderData(db, pagamento, providerPayload);
+  } else {
+    pagamento.updatedAt = nowIso();
+    if (isExpired(pagamento.expiresAt) && pagamento.status === "pendente") {
+      pagamento.status = "expirado";
+      const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+      if (reserva && reserva.status !== "pago") {
+        reserva.status = "expirado";
+        reserva.updatedAt = nowIso();
+      }
+    }
+  }
+
+  return pagamento;
 }
 
 /**
@@ -843,7 +1079,6 @@ app.post(
         });
       };
 
-      // Site: 1-150 livre
       criarBloco(151, 300, "mae", "Vendas externas mãe");
       criarBloco(301, 450, "pai", "Vendas externas pai");
       criarBloco(451, 550, "vo", "Vendas externas vó");
@@ -1185,6 +1420,11 @@ app.post("/api/pix", async (req, res) => {
 
     const cliente = upsertCliente(db, { nome, whatsapp });
 
+    const expiresAt = addMinutes(
+      new Date(),
+      RESERVATION_EXPIRES_MINUTES
+    ).toISOString();
+
     const reserva = createReservaRecord({
       db,
       sorteio,
@@ -1196,7 +1436,7 @@ app.post("/api/pix", async (req, res) => {
       origem: "site",
       bloco: false,
       observacao: "",
-      expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
+      expiresAt,
     });
 
     const phoneParts = getPhonePartsForPagarme(whatsapp);
@@ -1244,7 +1484,7 @@ app.post("/api/pix", async (req, res) => {
       },
     };
 
-    const pagarmeRes = await fetch(`${PAGARME_API_URL}/orders`, {
+    const pagarmeRes = await safeFetchJson(`${PAGARME_API_URL}/orders`, {
       method: "POST",
       headers: {
         Authorization: pagarmeBasicAuth(),
@@ -1254,7 +1494,7 @@ app.post("/api/pix", async (req, res) => {
       body: JSON.stringify(orderBody),
     });
 
-    const pagarmeData = await pagarmeRes.json();
+    const pagarmeData = pagarmeRes.data;
 
     if (!pagarmeRes.ok) {
       db.reservas = db.reservas.filter((r) => r.id !== reserva.id);
@@ -1268,6 +1508,13 @@ app.post("/api/pix", async (req, res) => {
 
     const charge = pagarmeData?.charges?.[0] || {};
     const lastTransaction = charge?.last_transaction || {};
+
+    const pixCode =
+      lastTransaction?.qr_code ||
+      lastTransaction?.qr_code_text ||
+      "";
+
+    const qrCodeBase64 = await buildQrCodeBase64(pixCode);
 
     const pagamento = {
       id: generateId("pag"),
@@ -1283,11 +1530,8 @@ app.post("/api/pix", async (req, res) => {
       providerOrderId: pagarmeData?.id || "",
       providerChargeId: charge?.id || "",
       providerTransactionId: lastTransaction?.id || "",
-      pixCopiaECola:
-        lastTransaction?.qr_code ||
-        lastTransaction?.qr_code_text ||
-        "",
-      qrCodeBase64: lastTransaction?.qr_code_url || "",
+      pixCopiaECola: pixCode,
+      qrCodeBase64,
       status: "pendente",
       raw: pagarmeData,
       createdAt: nowIso(),
@@ -1302,18 +1546,92 @@ app.post("/api/pix", async (req, res) => {
       success: true,
       reservaId: reserva.id,
       pagamentoId: pagamento.id,
+      paymentId: pagamento.id,
+      pixId: pagamento.id,
       status: pagamento.status,
       pixCopiaECola: pagamento.pixCopiaECola,
       pixCode: pagamento.pixCopiaECola,
       copiaecola: pagamento.pixCopiaECola,
       qrCodeBase64: pagamento.qrCodeBase64,
       expirationDate: pagamento.expiresAt,
+      expiresAt: pagamento.expiresAt,
+      expiresInSeconds: RESERVATION_EXPIRES_MINUTES * 60,
       total: pagamento.valor,
       providerOrderId: pagamento.providerOrderId,
     });
   } catch (err) {
     console.error("Erro /api/pix:", err);
     return res.status(500).json({ error: "Erro ao gerar PIX" });
+  }
+});
+
+/**
+ * =========================================================
+ * STATUS DO PIX / APROVAÇÃO AUTOMÁTICA
+ * =========================================================
+ */
+app.get("/api/pix/status/:paymentId", async (req, res) => {
+  try {
+    let db = await readDb();
+    db = migrateDb(db);
+
+    const { paymentId } = req.params;
+
+    const pagamento = db.pagamentos.find(
+      (p) =>
+        p.id === paymentId ||
+        p.providerOrderId === paymentId ||
+        p.providerChargeId === paymentId ||
+        p.providerTransactionId === paymentId
+    );
+
+    if (!pagamento) {
+      return res.status(404).json({ error: "Pagamento não encontrado." });
+    }
+
+    cleanupExpiredReservations(db);
+
+    if (pagamento.status !== "pago" && pagamento.provider === "pagarme") {
+      await fetchAndSyncPagarmePayment(db, pagamento);
+    }
+
+    if (pagamento.status === "pendente" && pagamento.expiresAt && isExpired(pagamento.expiresAt)) {
+      pagamento.status = "expirado";
+      pagamento.updatedAt = nowIso();
+
+      const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+      if (reserva && reserva.status !== "pago") {
+        reserva.status = "expirado";
+        reserva.updatedAt = nowIso();
+      }
+    }
+
+    await writeDb(db);
+
+    const publicStatus =
+      pagamento.status === "pago"
+        ? "paid"
+        : pagamento.status === "expirado"
+        ? "expired"
+        : pagamento.status === "cancelado"
+        ? "cancelled"
+        : "pending";
+
+    return res.json({
+      success: true,
+      paymentId: pagamento.id,
+      status: publicStatus,
+      paymentStatus: publicStatus,
+      pixStatus: publicStatus,
+      reservaId: pagamento.reservaId,
+      expiresAt: pagamento.expiresAt || null,
+      total: pagamento.valor,
+      numeros: pagamento.numeros || [],
+      paid: publicStatus === "paid",
+    });
+  } catch (err) {
+    console.error("Erro /api/pix/status/:paymentId:", err);
+    return res.status(500).json({ error: "Erro ao consultar status do PIX." });
   }
 });
 
@@ -1331,21 +1649,38 @@ app.post("/api/webhooks/pagarme", async (req, res) => {
     const eventType = event?.type || "";
     const data = event?.data || {};
 
-    if (!["order.paid", "charge.paid"].includes(eventType)) {
+    if (
+      ![
+        "order.paid",
+        "charge.paid",
+        "charge.processing",
+        "charge.pending",
+        "charge.canceled",
+        "charge.failed",
+        "order.canceled",
+      ].includes(eventType)
+    ) {
       return res.status(200).json({ received: true, ignored: true });
     }
 
     let providerOrderId = "";
     let providerChargeId = "";
+    let providerPayload = null;
 
-    if (eventType === "order.paid") {
+    if (eventType.startsWith("order.")) {
       providerOrderId = data?.id || "";
       providerChargeId = data?.charges?.[0]?.id || "";
+      providerPayload = data;
     }
 
-    if (eventType === "charge.paid") {
+    if (eventType.startsWith("charge.")) {
       providerChargeId = data?.id || "";
       providerOrderId = data?.order?.id || "";
+      providerPayload = {
+        charge: data,
+        charges: [data],
+        status: data?.status || "",
+      };
     }
 
     const pagamento = db.pagamentos.find(
@@ -1358,15 +1693,9 @@ app.post("/api/webhooks/pagarme", async (req, res) => {
       return res.status(200).json({ received: true, matched: false });
     }
 
-    pagamento.status = "pago";
-    pagamento.updatedAt = nowIso();
+    await syncPagamentoStatusFromProviderData(db, pagamento, providerPayload || {});
     pagamento.webhookPayload = event;
-
-    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
-    if (reserva) {
-      reserva.status = "pago";
-      reserva.updatedAt = nowIso();
-    }
+    pagamento.updatedAt = nowIso();
 
     await writeDb(db);
 
@@ -1403,7 +1732,12 @@ app.post("/api/pagamentos/:id/confirmar", async (req, res) => {
       reserva.updatedAt = nowIso();
 
       if (!reserva.bloco && !["site", "manual"].includes(String(reserva.origem || "").toLowerCase())) {
-        splitBlockIfNeeded(db, { id: reserva.sorteioId, price: reserva.valorNumero || 0 }, reserva.origem, reserva.numeros || []);
+        splitBlockIfNeeded(
+          db,
+          { id: reserva.sorteioId, price: reserva.valorNumero || 0 },
+          reserva.origem,
+          reserva.numeros || []
+        );
       }
     }
 
@@ -1747,6 +2081,48 @@ app.get("/api/meus-numeros/:slug", async (req, res) => {
     });
   } catch {
     res.status(500).json({ error: "Erro ao consultar." });
+  }
+});
+
+/**
+ * =========================================================
+ * FALLBACK PIX ESTÁTICO OPCIONAL
+ * =========================================================
+ * Use somente se quiser testar sem Pagar.me:
+ * defina PIX_KEY no .env e comente a validação do PAGARME_SECRET_KEY.
+ */
+app.post("/api/pix-estatico-teste", async (req, res) => {
+  try {
+    if (!PIX_KEY || PIX_KEY === "SEU_PIX_AQUI") {
+      return res.status(400).json({ error: "PIX_KEY não configurada." });
+    }
+
+    const valor = toMoneyNumber(req.body.valor || 0);
+    const txid = `CP${Date.now()}`;
+
+    const pixCode = buildPixPayload({
+      pixKey: PIX_KEY,
+      description: PIX_DESCRIPTION,
+      merchantName: PIX_MERCHANT_NAME,
+      merchantCity: PIX_MERCHANT_CITY,
+      txid,
+      amount: valor,
+    });
+
+    const qrCodeBase64 = await buildQrCodeBase64(pixCode);
+
+    return res.json({
+      success: true,
+      paymentId: txid,
+      status: "pending",
+      pixCopiaECola: pixCode,
+      pixCode,
+      qrCodeBase64,
+      expiresInSeconds: RESERVATION_EXPIRES_MINUTES * 60,
+      expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
+    });
+  } catch {
+    return res.status(500).json({ error: "Erro ao gerar PIX estático." });
   }
 });
 
