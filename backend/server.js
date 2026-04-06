@@ -1,423 +1,1087 @@
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
+const fsp = require("fs/promises");
 const path = require("path");
 const multer = require("multer");
+const QRCode = require("qrcode");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+/**
+ * =========================================================
+ * CONFIG
+ * =========================================================
+ */
+const FRONTEND_URL = process.env.FRONTEND_URL || "*";
+const BASE_URL =
+  process.env.BASE_URL || `http://localhost:${PORT}`;
 
-const ROOT_DIR = __dirname;
-const DATA_DIR = path.join(ROOT_DIR, "data");
-const UPLOADS_DIR = path.join(ROOT_DIR, "uploads");
-const DIST_DIR = path.join(ROOT_DIR, "dist");
-const PUBLIC_DIR = path.join(ROOT_DIR, "public");
-const SORTEIOS_FILE = path.join(DATA_DIR, "sorteios.json");
+const PIX_KEY = process.env.PIX_KEY || "SEU_PIX_AQUI";
+const PIX_MERCHANT_NAME = process.env.PIX_MERCHANT_NAME || "CASA PREMIADA";
+const PIX_MERCHANT_CITY = process.env.PIX_MERCHANT_CITY || "RIBEIRAO PRETO";
+const PIX_DESCRIPTION =
+  process.env.PIX_DESCRIPTION || "Pagamento Sorteio";
+const RESERVATION_EXPIRES_MINUTES = Number(
+  process.env.RESERVATION_EXPIRES_MINUTES || 30
+);
 
-function ensureDirs() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  if (!fs.existsSync(SORTEIOS_FILE)) {
-    fs.writeFileSync(SORTEIOS_FILE, JSON.stringify([], null, 2), "utf-8");
-  }
-}
-ensureDirs();
+const DATA_DIR = path.join(__dirname, "data");
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+const DB_FILE = path.join(DATA_DIR, "db.json");
 
+/**
+ * =========================================================
+ * APP MIDDLEWARE
+ * =========================================================
+ */
+app.use(
+  cors({
+    origin: FRONTEND_URL === "*" ? true : FRONTEND_URL,
+    credentials: true,
+  })
+);
+app.use(express.json({ limit: "10mb" }));
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-function readSorteios() {
-  try {
-    ensureDirs();
-    const raw = fs.readFileSync(SORTEIOS_FILE, "utf-8");
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch (error) {
-    console.error("Erro ao ler sorteios:", error);
-    return [];
+/**
+ * =========================================================
+ * STARTUP FILES
+ * =========================================================
+ */
+ensureFoldersAndDb();
+
+/**
+ * =========================================================
+ * MULTER
+ * =========================================================
+ */
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase() || ".jpg";
+    const safeName = slugify(path.basename(file.originalname || "imagem", ext));
+    cb(null, `${Date.now()}-${safeName}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+  },
+});
+
+/**
+ * =========================================================
+ * HELPERS
+ * =========================================================
+ */
+function ensureFoldersAndDb() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+  if (!fs.existsSync(DB_FILE)) {
+    const initialDb = {
+      sorteios: [],
+      clientes: [],
+      reservas: [],
+      pagamentos: [],
+      configuracoes: {
+        companyName: "Casa Premiada Ribeirão",
+        logoUrl: "",
+        whatsapp: "",
+      },
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(initialDb, null, 2), "utf-8");
   }
 }
 
-function saveSorteios(data) {
-  ensureDirs();
-  fs.writeFileSync(SORTEIOS_FILE, JSON.stringify(data, null, 2), "utf-8");
+async function readDb() {
+  const raw = await fsp.readFile(DB_FILE, "utf-8");
+  return JSON.parse(raw);
+}
+
+async function writeDb(db) {
+  await fsp.writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + minutes * 60000);
+}
+
+function isExpired(expiresAt) {
+  if (!expiresAt) return false;
+  return new Date(expiresAt).getTime() < Date.now();
+}
+
+function generateId(prefix = "id") {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now()
+    .toString(36)
+    .slice(-6)}`;
 }
 
 function slugify(text = "") {
   return String(text)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
     .trim()
-    .replace(/[^a-z0-9\s-]/g, "")
     .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
+    .replace(/-+/g, "-")
+    .toLowerCase();
 }
 
-function gerarId() {
-  return Date.now();
+function normalizePhone(value = "") {
+  return String(value).replace(/\D/g, "").slice(0, 13);
 }
 
-function buildNumeros(total, existentes = []) {
-  const mapa = new Map((existentes || []).map((n) => [Number(n.numero), n]));
-  const lista = [];
-
-  for (let i = 1; i <= Number(total || 0); i++) {
-    const existente = mapa.get(i);
-    lista.push({
-      numero: i,
-      status: existente?.status || "disponivel",
-      compradorNome: existente?.compradorNome || "",
-      compradorTelefone: existente?.compradorTelefone || "",
-      reservadoEm: existente?.reservadoEm || null,
-      pagoEm: existente?.pagoEm || null,
-    });
-  }
-
-  return lista;
+function normalizeName(value = "") {
+  return String(value).trim().replace(/\s+/g, " ");
 }
 
-function normalizarSorteio(body = {}, atual = null) {
-  const titulo = String(body.titulo || "").trim();
-  const descricao = String(body.descricao || "").trim();
-  const valorNumero = Number(body.valorNumero || 0);
-  const totalNumeros = Number(body.totalNumeros || 0);
-  const whatsapp = String(body.whatsapp || atual?.whatsapp || "").trim();
-  const logoUrl = String(body.logoUrl || atual?.logoUrl || "").trim();
-  const fotoPremio = String(body.fotoPremio || atual?.fotoPremio || "").trim();
-  const status = String(body.status || atual?.status || "ativo").trim();
-  const dataSorteio = String(body.dataSorteio || atual?.dataSorteio || "").trim();
+function toMoneyNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? Number(num.toFixed(2)) : 0;
+}
 
-  let slug = String(body.slug || "").trim();
-  if (!slug) slug = slugify(titulo || `sorteio-${Date.now()}`);
+function absoluteFileUrl(fileName) {
+  if (!fileName) return "";
+  if (/^https?:\/\//i.test(fileName)) return fileName;
+  return `${BASE_URL}/uploads/${fileName}`;
+}
+
+function sanitizeReservedNumbers(numbers) {
+  if (!Array.isArray(numbers)) return [];
+  return [...new Set(numbers.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+}
+
+function getSorteioDisplay(sorteio, db) {
+  cleanupExpiredReservationsForSorteio(sorteio, db);
+
+  const reservedNumbers = db.reservas
+    .filter(
+      (r) =>
+        r.sorteioId === sorteio.id &&
+        r.status === "reservado" &&
+        !isExpired(r.expiresAt)
+    )
+    .flatMap((r) => r.numeros);
+
+  const paidNumbers = db.pagamentos
+    .filter((p) => p.sorteioId === sorteio.id && p.status === "pago")
+    .flatMap((p) => p.numeros);
+
+  const uniqueReserved = [...new Set(reservedNumbers.map(Number))].sort((a, b) => a - b);
+  const uniquePaid = [...new Set(paidNumbers.map(Number))].sort((a, b) => a - b);
 
   return {
-    id: atual?.id || gerarId(),
-    slug,
-    titulo,
-    descricao,
-    valorNumero,
-    totalNumeros,
-    whatsapp,
-    logoUrl,
-    fotoPremio,
-    status,
-    dataSorteio,
-    numeros: buildNumeros(totalNumeros, atual?.numeros || body.numeros || []),
-    createdAt: atual?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    id: sorteio.id,
+    slug: sorteio.slug,
+    title: sorteio.title,
+    subtitle: sorteio.subtitle || "",
+    descricao: sorteio.descricao || "",
+    companyName:
+      sorteio.companyName || db.configuracoes?.companyName || "Casa Premiada Ribeirão",
+    whatsapp:
+      sorteio.whatsapp || db.configuracoes?.whatsapp || "",
+    image: sorteio.image || "",
+    logoUrl: sorteio.logoUrl || db.configuracoes?.logoUrl || "",
+    drawDate: sorteio.drawDate || "",
+    totalNumbers: sorteio.totalNumbers,
+    price: sorteio.price,
+    status: sorteio.status || "ativo",
+    reservedNumbers: uniqueReserved,
+    paidNumbers: uniquePaid,
+    soldNumbers: uniquePaid,
+    createdAt: sorteio.createdAt,
+    updatedAt: sorteio.updatedAt,
   };
 }
 
-function encontrarSorteio(valor, lista) {
-  const busca = String(valor).trim();
-  return lista.find(
-    (s) => String(s.id) === busca || String(s.slug) === busca
-  );
+function getUnavailableNumbersForSorteio(sorteioId, db) {
+  cleanupExpiredReservations(db);
+
+  const reserved = db.reservas
+    .filter(
+      (r) =>
+        r.sorteioId === sorteioId &&
+        r.status === "reservado" &&
+        !isExpired(r.expiresAt)
+    )
+    .flatMap((r) => r.numeros);
+
+  const paid = db.pagamentos
+    .filter((p) => p.sorteioId === sorteioId && p.status === "pago")
+    .flatMap((p) => p.numeros);
+
+  return [...new Set([...reserved, ...paid].map(Number))];
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "");
-    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
-  },
-});
-const upload = multer({ storage });
+function cleanupExpiredReservations(db) {
+  let changed = false;
 
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
-});
-
-app.post("/api/upload", upload.single("imagem"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "Nenhuma imagem enviada." });
+  db.reservas = db.reservas.map((reserva) => {
+    if (reserva.status === "reservado" && isExpired(reserva.expiresAt)) {
+      changed = true;
+      return {
+        ...reserva,
+        status: "expirado",
+        updatedAt: nowIso(),
+      };
     }
+    return reserva;
+  });
 
-    const url = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-    res.json({ url });
+  return changed;
+}
+
+function cleanupExpiredReservationsForSorteio(sorteio, db) {
+  if (!sorteio) return false;
+  let changed = false;
+
+  db.reservas = db.reservas.map((reserva) => {
+    if (
+      reserva.sorteioId === sorteio.id &&
+      reserva.status === "reservado" &&
+      isExpired(reserva.expiresAt)
+    ) {
+      changed = true;
+      return {
+        ...reserva,
+        status: "expirado",
+        updatedAt: nowIso(),
+      };
+    }
+    return reserva;
+  });
+
+  return changed;
+}
+
+function findClienteByPhone(db, whatsapp) {
+  const normalized = normalizePhone(whatsapp);
+  return db.clientes.find((c) => normalizePhone(c.whatsapp) === normalized) || null;
+}
+
+function upsertCliente(db, { nome, whatsapp }) {
+  const normalizedPhone = normalizePhone(whatsapp);
+  const normalizedName = normalizeName(nome);
+
+  let cliente = db.clientes.find(
+    (c) => normalizePhone(c.whatsapp) === normalizedPhone
+  );
+
+  if (cliente) {
+    cliente.nome = normalizedName || cliente.nome;
+    cliente.whatsapp = normalizedPhone;
+    cliente.updatedAt = nowIso();
+    return cliente;
+  }
+
+  cliente = {
+    id: generateId("cli"),
+    nome: normalizedName,
+    whatsapp: normalizedPhone,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  db.clientes.push(cliente);
+  return cliente;
+}
+
+function crc16(str) {
+  let crc = 0xffff;
+  for (let c = 0; c < str.length; c += 1) {
+    crc ^= str.charCodeAt(c) << 8;
+    for (let i = 0; i < 8; i += 1) {
+      if ((crc & 0x8000) !== 0) {
+        crc = (crc << 1) ^ 0x1021;
+      } else {
+        crc <<= 1;
+      }
+      crc &= 0xffff;
+    }
+  }
+  return crc.toString(16).toUpperCase().padStart(4, "0");
+}
+
+function emv(id, value) {
+  const stringValue = String(value);
+  return `${id}${String(stringValue.length).padStart(2, "0")}${stringValue}`;
+}
+
+function buildPixPayload({
+  pixKey,
+  description,
+  merchantName,
+  merchantCity,
+  txid,
+  amount,
+}) {
+  const gui = emv("00", "BR.GOV.BCB.PIX");
+  const key = emv("01", pixKey);
+  const desc = description ? emv("02", description.slice(0, 99)) : "";
+  const merchantAccountInfo = emv("26", `${gui}${key}${desc}`);
+
+  const payloadWithoutCrc =
+    emv("00", "01") +
+    emv("01", "12") +
+    merchantAccountInfo +
+    emv("52", "0000") +
+    emv("53", "986") +
+    (amount ? emv("54", Number(amount).toFixed(2)) : "") +
+    emv("58", "BR") +
+    emv("59", (merchantName || "RECEBEDOR").slice(0, 25)) +
+    emv("60", (merchantCity || "CIDADE").slice(0, 15)) +
+    emv("62", emv("05", (txid || "***").slice(0, 25))) +
+    "6304";
+
+  const crc = crc16(payloadWithoutCrc);
+  return payloadWithoutCrc + crc;
+}
+
+function formatImageField(req, file, fallback = "") {
+  if (file?.filename) return absoluteFileUrl(file.filename);
+  if (req.body?.image) return String(req.body.image).trim();
+  if (req.body?.imagem) return String(req.body.imagem).trim();
+  return fallback;
+}
+
+/**
+ * =========================================================
+ * HEALTH
+ * =========================================================
+ */
+app.get("/api/health", async (req, res) => {
+  res.json({
+    ok: true,
+    message: "Servidor rodando",
+    time: nowIso(),
+  });
+});
+
+/**
+ * =========================================================
+ * CONFIGURAÇÕES GERAIS
+ * =========================================================
+ */
+app.get("/api/configuracoes", async (req, res) => {
+  try {
+    const db = await readDb();
+    res.json(db.configuracoes || {});
   } catch (error) {
-    console.error("Erro no upload:", error);
-    res.status(500).json({ error: "Erro no upload." });
+    res.status(500).json({ error: "Erro ao carregar configurações." });
   }
 });
 
-app.get("/api/admin/sorteios", (req, res) => {
+app.put("/api/configuracoes", upload.single("logo"), async (req, res) => {
   try {
-    const sorteios = readSorteios().sort((a, b) => Number(b.id) - Number(a.id));
+    const db = await readDb();
+
+    db.configuracoes = {
+      ...(db.configuracoes || {}),
+      companyName:
+        req.body.companyName?.trim() ||
+        req.body.empresa?.trim() ||
+        db.configuracoes.companyName ||
+        "Casa Premiada Ribeirão",
+      whatsapp:
+        normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
+        db.configuracoes.whatsapp ||
+        "",
+      logoUrl: formatImageField(req, req.file, db.configuracoes.logoUrl || ""),
+    };
+
+    await writeDb(db);
+
+    res.json({
+      success: true,
+      configuracoes: db.configuracoes,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao salvar configurações." });
+  }
+});
+
+/**
+ * =========================================================
+ * SORTEIOS
+ * =========================================================
+ */
+app.get("/api/sorteios", async (req, res) => {
+  try {
+    const db = await readDb();
+
+    const changed = cleanupExpiredReservations(db);
+    if (changed) await writeDb(db);
+
+    const sorteios = db.sorteios
+      .map((s) => getSorteioDisplay(s, db))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
     res.json(sorteios);
   } catch (error) {
-    console.error("Erro ao listar sorteios:", error);
     res.status(500).json({ error: "Erro ao listar sorteios." });
   }
 });
 
-app.get("/api/admin/sorteios/:id", (req, res) => {
+app.get("/api/sorteios/:slug", async (req, res) => {
   try {
-    const sorteios = readSorteios();
-    const sorteio = encontrarSorteio(req.params.id, sorteios);
+    const { slug } = req.params;
+    const db = await readDb();
+
+    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
 
     if (!sorteio) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    res.json(sorteio);
+    const changed = cleanupExpiredReservationsForSorteio(sorteio, db);
+    if (changed) await writeDb(db);
+
+    res.json(getSorteioDisplay(sorteio, db));
   } catch (error) {
-    console.error("Erro ao buscar sorteio:", error);
-    res.status(500).json({ error: "Erro ao buscar sorteio." });
+    res.status(500).json({ error: "Erro ao carregar sorteio." });
   }
 });
 
-app.post("/api/admin/sorteios", (req, res) => {
+app.post("/api/sorteios", upload.single("image"), async (req, res) => {
   try {
-    console.log("BODY RECEBIDO EM /api/admin/sorteios:", req.body);
+    const db = await readDb();
 
-    const sorteios = readSorteios();
-    const novo = normalizarSorteio(req.body);
+    const title = String(req.body.title || req.body.titulo || "").trim();
+    const subtitle = String(req.body.subtitle || req.body.subtitulo || "").trim();
+    const descricao = String(req.body.descricao || "").trim();
+    const companyName =
+      String(req.body.companyName || req.body.empresa || "").trim() ||
+      db.configuracoes?.companyName ||
+      "Casa Premiada Ribeirão";
 
-    if (!novo.titulo) {
+    const whatsapp =
+      normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
+      db.configuracoes?.whatsapp ||
+      "";
+
+    const totalNumbers = Number(
+      req.body.totalNumbers || req.body.quantidadeNumeros || 100
+    );
+    const price = toMoneyNumber(req.body.price || req.body.valor || 0);
+    const drawDate = String(req.body.drawDate || req.body.dataSorteio || "").trim();
+
+    if (!title) {
       return res.status(400).json({ error: "Título é obrigatório." });
     }
 
-    if (!novo.totalNumeros || novo.totalNumeros < 1) {
-      return res.status(400).json({ error: "Total de números inválido." });
+    if (!Number.isInteger(totalNumbers) || totalNumbers <= 0) {
+      return res
+        .status(400)
+        .json({ error: "Quantidade de números inválida." });
     }
 
-    if (novo.valorNumero < 0) {
+    if (price <= 0) {
       return res.status(400).json({ error: "Valor inválido." });
     }
 
-    const slugDuplicado = sorteios.some((s) => String(s.slug) === String(novo.slug));
-    if (slugDuplicado) {
-      novo.slug = `${novo.slug}-${novo.id}`;
+    let slug = slugify(req.body.slug || title);
+    if (!slug) slug = generateId("sorteio");
+
+    const slugAlreadyExists = db.sorteios.some((s) => s.slug === slug);
+    if (slugAlreadyExists) {
+      slug = `${slug}-${Date.now().toString().slice(-4)}`;
     }
 
-    sorteios.push(novo);
-    saveSorteios(sorteios);
+    const sorteio = {
+      id: generateId("sort"),
+      slug,
+      title,
+      subtitle,
+      descricao,
+      companyName,
+      whatsapp,
+      image: formatImageField(req, req.file, ""),
+      logoUrl: String(req.body.logoUrl || "").trim() || db.configuracoes?.logoUrl || "",
+      totalNumbers,
+      price,
+      drawDate,
+      status: "ativo",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
 
-    res.status(201).json(novo);
-  } catch (error) {
-    console.error("Erro ao criar sorteio:", error);
-    res.status(500).json({
-      error: "Erro ao criar sorteio.",
-      details: error.message,
+    db.sorteios.push(sorteio);
+    await writeDb(db);
+
+    res.status(201).json({
+      success: true,
+      sorteio: getSorteioDisplay(sorteio, db),
+      publicUrl: `${req.protocol}://${req.get("host")}/sorteio/${sorteio.slug}`,
     });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar sorteio." });
   }
 });
 
-app.put("/api/admin/sorteios/:id", (req, res) => {
+app.put("/api/sorteios/:id", upload.single("image"), async (req, res) => {
   try {
-    const sorteios = readSorteios();
-    const index = sorteios.findIndex((s) => String(s.id) === String(req.params.id));
+    const db = await readDb();
+    const { id } = req.params;
 
-    if (index === -1) {
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+
+    if (!sorteio) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    const atual = sorteios[index];
-    const atualizado = normalizarSorteio(req.body, atual);
+    const nextTitle =
+      req.body.title !== undefined || req.body.titulo !== undefined
+        ? String(req.body.title || req.body.titulo || "").trim()
+        : sorteio.title;
 
-    const slugDuplicado = sorteios.some(
-      (s, i) => i !== index && String(s.slug) === String(atualizado.slug)
-    );
-    if (slugDuplicado) {
-      atualizado.slug = `${atualizado.slug}-${atualizado.id}`;
+    const nextSlugInput =
+      req.body.slug !== undefined ? String(req.body.slug || "").trim() : sorteio.slug;
+
+    const nextSlugBase = slugify(nextSlugInput || nextTitle || sorteio.title);
+    let nextSlug = nextSlugBase || sorteio.slug;
+
+    if (
+      nextSlug !== sorteio.slug &&
+      db.sorteios.some((s) => s.slug === nextSlug && s.id !== sorteio.id)
+    ) {
+      nextSlug = `${nextSlug}-${Date.now().toString().slice(-4)}`;
     }
 
-    sorteios[index] = atualizado;
-    saveSorteios(sorteios);
+    sorteio.title = nextTitle || sorteio.title;
+    sorteio.subtitle =
+      req.body.subtitle !== undefined || req.body.subtitulo !== undefined
+        ? String(req.body.subtitle || req.body.subtitulo || "").trim()
+        : sorteio.subtitle || "";
 
-    res.json(atualizado);
+    sorteio.descricao =
+      req.body.descricao !== undefined
+        ? String(req.body.descricao || "").trim()
+        : sorteio.descricao || "";
+
+    sorteio.companyName =
+      req.body.companyName !== undefined || req.body.empresa !== undefined
+        ? String(req.body.companyName || req.body.empresa || "").trim() ||
+          sorteio.companyName
+        : sorteio.companyName;
+
+    sorteio.whatsapp =
+      req.body.whatsapp !== undefined || req.body.telefone !== undefined
+        ? normalizePhone(req.body.whatsapp || req.body.telefone || "") ||
+          sorteio.whatsapp
+        : sorteio.whatsapp;
+
+    sorteio.totalNumbers =
+      req.body.totalNumbers !== undefined ||
+      req.body.quantidadeNumeros !== undefined
+        ? Number(req.body.totalNumbers || req.body.quantidadeNumeros || sorteio.totalNumbers)
+        : sorteio.totalNumbers;
+
+    sorteio.price =
+      req.body.price !== undefined || req.body.valor !== undefined
+        ? toMoneyNumber(req.body.price || req.body.valor || sorteio.price)
+        : sorteio.price;
+
+    sorteio.drawDate =
+      req.body.drawDate !== undefined || req.body.dataSorteio !== undefined
+        ? String(req.body.drawDate || req.body.dataSorteio || "").trim()
+        : sorteio.drawDate;
+
+    sorteio.status =
+      req.body.status !== undefined
+        ? String(req.body.status || "ativo").trim()
+        : sorteio.status || "ativo";
+
+    sorteio.slug = nextSlug;
+    sorteio.image = formatImageField(req, req.file, sorteio.image || "");
+    sorteio.updatedAt = nowIso();
+
+    await writeDb(db);
+
+    res.json({
+      success: true,
+      sorteio: getSorteioDisplay(sorteio, db),
+    });
   } catch (error) {
-    console.error("Erro ao editar sorteio:", error);
-    res.status(500).json({ error: "Erro ao editar sorteio." });
+    res.status(500).json({ error: "Erro ao atualizar sorteio." });
   }
 });
 
-app.delete("/api/admin/sorteios/:id", (req, res) => {
+app.delete("/api/sorteios/:id", async (req, res) => {
   try {
-    const sorteios = readSorteios();
-    const filtrados = sorteios.filter((s) => String(s.id) !== String(req.params.id));
+    const db = await readDb();
+    const { id } = req.params;
 
-    if (filtrados.length === sorteios.length) {
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    saveSorteios(filtrados);
-    res.json({ ok: true });
+    db.sorteios = db.sorteios.filter((s) => s.id !== sorteio.id);
+    db.reservas = db.reservas.filter((r) => r.sorteioId !== sorteio.id);
+    db.pagamentos = db.pagamentos.filter((p) => p.sorteioId !== sorteio.id);
+
+    await writeDb(db);
+
+    res.json({ success: true });
   } catch (error) {
-    console.error("Erro ao excluir sorteio:", error);
     res.status(500).json({ error: "Erro ao excluir sorteio." });
   }
 });
 
-app.get("/api/admin/sorteios/:id/resumo", (req, res) => {
+/**
+ * =========================================================
+ * CLIENTES
+ * =========================================================
+ */
+app.get("/api/clientes/buscar", async (req, res) => {
   try {
-    const sorteios = readSorteios();
-    const sorteio = encontrarSorteio(req.params.id, sorteios);
+    const db = await readDb();
+    const whatsapp = normalizePhone(req.query.whatsapp || "");
+
+    if (!whatsapp) {
+      return res.status(400).json({ error: "WhatsApp é obrigatório." });
+    }
+
+    const cliente = findClienteByPhone(db, whatsapp);
+
+    if (!cliente) {
+      return res.json({ cliente: null });
+    }
+
+    res.json({ cliente });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar cliente." });
+  }
+});
+
+/**
+ * =========================================================
+ * RESERVAS
+ * =========================================================
+ */
+app.post("/api/reservas", async (req, res) => {
+  try {
+    const db = await readDb();
+
+    const slug = String(req.body.slug || "").trim();
+    const nome = normalizeName(req.body.nome || "");
+    const whatsapp = normalizePhone(req.body.whatsapp || "");
+    const numeros = sanitizeReservedNumbers(req.body.numeros);
+
+    if (!slug) {
+      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
+    }
+
+    if (!nome) {
+      return res.status(400).json({ error: "Nome é obrigatório." });
+    }
+
+    if (whatsapp.length < 10) {
+      return res.status(400).json({ error: "WhatsApp inválido." });
+    }
+
+    if (!numeros.length) {
+      return res.status(400).json({ error: "Escolha ao menos um número." });
+    }
+
+    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
 
     if (!sorteio) {
       return res.status(404).json({ error: "Sorteio não encontrado." });
     }
 
-    const nums = sorteio.numeros || [];
-    const vendidos = nums.filter((n) => n.status === "pago").length;
-    const reservados = nums.filter((n) => n.status === "reservado").length;
-    const disponiveis = nums.filter((n) => n.status === "disponivel").length;
-    const arrecadado = vendidos * Number(sorteio.valorNumero || 0);
-
-    res.json({ vendidos, reservados, disponiveis, arrecadado, total: nums.length });
-  } catch (error) {
-    console.error("Erro ao gerar resumo:", error);
-    res.status(500).json({ error: "Erro ao gerar resumo." });
-  }
-});
-
-app.get("/api/admin/sorteios/:id/participantes", (req, res) => {
-  try {
-    const sorteios = readSorteios();
-    const sorteio = encontrarSorteio(req.params.id, sorteios);
-
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
+    if (sorteio.status && sorteio.status !== "ativo") {
+      return res.status(400).json({ error: "Este sorteio não está disponível." });
     }
 
-    const agrupado = {};
-
-    for (const item of sorteio.numeros || []) {
-      if (!item.compradorNome && !item.compradorTelefone) continue;
-
-      const chave = `${item.compradorNome}__${item.compradorTelefone}`;
-      if (!agrupado[chave]) {
-        agrupado[chave] = {
-          nome: item.compradorNome || "",
-          telefone: item.compradorTelefone || "",
-          numeros: [],
-          status: [],
-        };
-      }
-
-      agrupado[chave].numeros.push(item.numero);
-      agrupado[chave].status.push(item.status);
-    }
-
-    res.json(Object.values(agrupado));
-  } catch (error) {
-    console.error("Erro ao buscar participantes:", error);
-    res.status(500).json({ error: "Erro ao buscar participantes." });
-  }
-});
-
-app.get("/api/public/sorteios", (req, res) => {
-  try {
-    const sorteios = readSorteios()
-      .filter((s) => s.status !== "inativo")
-      .sort((a, b) => Number(b.id) - Number(a.id));
-
-    res.json(sorteios);
-  } catch (error) {
-    console.error("Erro ao listar sorteios públicos:", error);
-    res.status(500).json({ error: "Erro ao listar sorteios." });
-  }
-});
-
-app.get("/api/public/sorteios/:slug", (req, res) => {
-  try {
-    const sorteios = readSorteios();
-    const sorteio = encontrarSorteio(req.params.slug, sorteios);
-
-    if (!sorteio) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
-    }
-
-    res.json(sorteio);
-  } catch (error) {
-    console.error("Erro ao buscar sorteio público:", error);
-    res.status(500).json({ error: "Erro ao buscar sorteio." });
-  }
-});
-
-app.post("/api/public/sorteios/:slug/reservar", (req, res) => {
-  try {
-    const { nome, telefone, numeros } = req.body;
-
-    if (!nome || !telefone) {
-      return res.status(400).json({ error: "Nome e telefone são obrigatórios." });
-    }
-
-    if (!Array.isArray(numeros) || !numeros.length) {
-      return res.status(400).json({ error: "Selecione pelo menos um número." });
-    }
-
-    const sorteios = readSorteios();
-    const index = sorteios.findIndex(
-      (s) =>
-        String(s.id) === String(req.params.slug) ||
-        String(s.slug) === String(req.params.slug)
+    const invalidNumbers = numeros.filter(
+      (n) => n < 1 || n > Number(sorteio.totalNumbers)
     );
 
-    if (index === -1) {
-      return res.status(404).json({ error: "Sorteio não encontrado." });
+    if (invalidNumbers.length) {
+      return res.status(400).json({
+        error: `Número(s) inválido(s): ${invalidNumbers.join(", ")}`,
+      });
     }
 
-    const sorteio = sorteios[index];
-
-    for (const numero of numeros) {
-      const item = sorteio.numeros.find((n) => Number(n.numero) === Number(numero));
-      if (!item) {
-        return res.status(400).json({ error: `Número ${numero} não existe.` });
-      }
-      if (item.status !== "disponivel") {
-        return res.status(400).json({ error: `Número ${numero} não está disponível.` });
-      }
+    const changed = cleanupExpiredReservations(db);
+    if (changed) {
+      await writeDb(db);
     }
 
-    const agora = new Date().toISOString();
+    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
+    const conflicts = numeros.filter((n) => unavailable.includes(n));
 
-    for (const numero of numeros) {
-      const item = sorteio.numeros.find((n) => Number(n.numero) === Number(numero));
-      item.status = "reservado";
-      item.compradorNome = nome;
-      item.compradorTelefone = telefone;
-      item.reservadoEm = agora;
+    if (conflicts.length) {
+      return res.status(409).json({
+        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
+        conflicts,
+      });
     }
 
-    sorteio.updatedAt = agora;
-    sorteios[index] = sorteio;
-    saveSorteios(sorteios);
+    const cliente = upsertCliente(db, { nome, whatsapp });
 
-    res.json({
-      success: true,
-      message: "Reserva realizada com sucesso.",
+    const expiresAt = addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString();
+
+    const reserva = {
+      id: generateId("res"),
       sorteioId: sorteio.id,
-      slug: sorteio.slug,
+      clienteId: cliente.id,
+      nome,
+      whatsapp,
       numeros,
-      total: numeros.length * Number(sorteio.valorNumero || 0),
+      total: toMoneyNumber(numeros.length * Number(sorteio.price || 0)),
+      status: "reservado",
+      expiresAt,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    db.reservas.push(reserva);
+    await writeDb(db);
+
+    res.status(201).json({
+      success: true,
+      reservaId: reserva.id,
+      status: reserva.status,
+      expiresAt: reserva.expiresAt,
+      numeros: reserva.numeros,
+      total: reserva.total,
+      cliente: {
+        nome: cliente.nome,
+        whatsapp: cliente.whatsapp,
+      },
     });
   } catch (error) {
-    console.error("Erro ao reservar números:", error);
     res.status(500).json({ error: "Erro ao reservar números." });
   }
 });
 
-if (fs.existsSync(DIST_DIR)) {
-  app.use(express.static(DIST_DIR));
-  app.get(/^\/(?!api|uploads).*/, (req, res) => {
-    res.sendFile(path.join(DIST_DIR, "index.html"));
-  });
-} else if (fs.existsSync(PUBLIC_DIR)) {
-  app.use(express.static(PUBLIC_DIR));
-  app.get(/^\/(?!api|uploads).*/, (req, res) => {
-    const indexPath = path.join(PUBLIC_DIR, "index.html");
-    if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
-    res.status(404).send("Frontend não encontrado.");
-  });
-}
+/**
+ * =========================================================
+ * PIX
+ * =========================================================
+ */
+app.post("/api/pix", async (req, res) => {
+  try {
+    const db = await readDb();
 
+    const slug = String(req.body.slug || "").trim();
+    const nome = normalizeName(req.body.nome || "");
+    const whatsapp = normalizePhone(req.body.whatsapp || "");
+    const numeros = sanitizeReservedNumbers(req.body.numeros);
+
+    if (!slug) {
+      return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
+    }
+
+    if (!nome) {
+      return res.status(400).json({ error: "Nome é obrigatório." });
+    }
+
+    if (whatsapp.length < 10) {
+      return res.status(400).json({ error: "WhatsApp inválido." });
+    }
+
+    if (!numeros.length) {
+      return res.status(400).json({ error: "Escolha ao menos um número." });
+    }
+
+    const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
+
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    if (sorteio.status && sorteio.status !== "ativo") {
+      return res.status(400).json({ error: "Este sorteio não está disponível." });
+    }
+
+    const invalidNumbers = numeros.filter(
+      (n) => n < 1 || n > Number(sorteio.totalNumbers)
+    );
+
+    if (invalidNumbers.length) {
+      return res.status(400).json({
+        error: `Número(s) inválido(s): ${invalidNumbers.join(", ")}`,
+      });
+    }
+
+    cleanupExpiredReservations(db);
+
+    const unavailable = getUnavailableNumbersForSorteio(sorteio.id, db);
+    const conflicts = numeros.filter((n) => unavailable.includes(n));
+
+    if (conflicts.length) {
+      return res.status(409).json({
+        error: `Os números ${conflicts.join(", ")} não estão mais disponíveis.`,
+        conflicts,
+      });
+    }
+
+    const cliente = upsertCliente(db, { nome, whatsapp });
+
+    const reserva = {
+      id: generateId("res"),
+      sorteioId: sorteio.id,
+      clienteId: cliente.id,
+      nome,
+      whatsapp,
+      numeros,
+      total: toMoneyNumber(numeros.length * Number(sorteio.price || 0)),
+      status: "reservado",
+      expiresAt: addMinutes(
+        new Date(),
+        RESERVATION_EXPIRES_MINUTES
+      ).toISOString(),
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    db.reservas.push(reserva);
+
+    const pixCode = buildPixPayload({
+      pixKey: PIX_KEY,
+      description: `${PIX_DESCRIPTION} ${sorteio.title}`.slice(0, 99),
+      merchantName: PIX_MERCHANT_NAME,
+      merchantCity: PIX_MERCHANT_CITY,
+      txid: reserva.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 25) || "***",
+      amount: reserva.total,
+    });
+
+    const qrCodeBase64 = await QRCode.toDataURL(pixCode);
+
+    const pagamento = {
+      id: generateId("pag"),
+      reservaId: reserva.id,
+      sorteioId: sorteio.id,
+      clienteId: cliente.id,
+      nome,
+      whatsapp,
+      numeros,
+      valor: reserva.total,
+      forma: "pix",
+      pixCopiaECola: pixCode,
+      qrCodeBase64,
+      status: "pendente",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      expiresAt: reserva.expiresAt,
+    };
+
+    db.pagamentos.push(pagamento);
+    await writeDb(db);
+
+    res.status(201).json({
+      success: true,
+      reservaId: reserva.id,
+      pagamentoId: pagamento.id,
+      status: pagamento.status,
+      pixCopiaECola: pagamento.pixCopiaECola,
+      pixCode: pagamento.pixCopiaECola,
+      copiaecola: pagamento.pixCopiaECola,
+      qrCodeBase64: pagamento.qrCodeBase64,
+      expirationDate: pagamento.expiresAt,
+      total: pagamento.valor,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao gerar Pix." });
+  }
+});
+
+/**
+ * =========================================================
+ * CONFIRMAÇÃO MANUAL DE PAGAMENTO
+ * use no admin até integrar baixa automática
+ * =========================================================
+ */
+app.post("/api/pagamentos/:id/confirmar", async (req, res) => {
+  try {
+    const db = await readDb();
+    const { id } = req.params;
+
+    const pagamento = db.pagamentos.find((p) => p.id === id);
+    if (!pagamento) {
+      return res.status(404).json({ error: "Pagamento não encontrado." });
+    }
+
+    pagamento.status = "pago";
+    pagamento.updatedAt = nowIso();
+
+    const reserva = db.reservas.find((r) => r.id === pagamento.reservaId);
+    if (reserva) {
+      reserva.status = "pago";
+      reserva.updatedAt = nowIso();
+    }
+
+    await writeDb(db);
+
+    res.json({
+      success: true,
+      pagamento,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao confirmar pagamento." });
+  }
+});
+
+/**
+ * =========================================================
+ * ADMIN / RESUMO
+ * =========================================================
+ */
+app.get("/api/admin/sorteios/:id/resumo", async (req, res) => {
+  try {
+    const db = await readDb();
+    const { id } = req.params;
+
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    cleanupExpiredReservations(db);
+    await writeDb(db);
+
+    const reservas = db.reservas.filter((r) => r.sorteioId === sorteio.id);
+    const pagamentos = db.pagamentos.filter((p) => p.sorteioId === sorteio.id);
+
+    const pagos = pagamentos.filter((p) => p.status === "pago");
+    const pendentes = pagamentos.filter((p) => p.status === "pendente");
+    const reservadosAtivos = reservas.filter(
+      (r) => r.status === "reservado" && !isExpired(r.expiresAt)
+    );
+
+    const numerosPagos = [...new Set(pagos.flatMap((p) => p.numeros))];
+    const numerosReservados = [...new Set(reservadosAtivos.flatMap((r) => r.numeros))];
+
+    const arrecadado = pagos.reduce((acc, p) => acc + Number(p.valor || 0), 0);
+
+    res.json({
+      sorteio: getSorteioDisplay(sorteio, db),
+      metricas: {
+        totalNumeros: sorteio.totalNumbers,
+        vendidos: numerosPagos.length,
+        reservados: numerosReservados.length,
+        disponiveis:
+          Number(sorteio.totalNumbers) -
+          [...new Set([...numerosPagos, ...numerosReservados])].length,
+        arrecadado: Number(arrecadado.toFixed(2)),
+        pagamentosPendentes: pendentes.length,
+        pagamentosPagos: pagos.length,
+      },
+      participantes: [
+        ...reservas.map((r) => ({
+          id: r.id,
+          nome: r.nome,
+          whatsapp: r.whatsapp,
+          numeros: r.numeros,
+          total: r.total,
+          status: r.status,
+          createdAt: r.createdAt,
+          expiresAt: r.expiresAt,
+        })),
+      ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao carregar resumo do sorteio." });
+  }
+});
+
+/**
+ * =========================================================
+ * LISTAGEM DE PAGAMENTOS
+ * =========================================================
+ */
+app.get("/api/pagamentos", async (req, res) => {
+  try {
+    const db = await readDb();
+    const sorteioId = String(req.query.sorteioId || "").trim();
+
+    let pagamentos = db.pagamentos;
+
+    if (sorteioId) {
+      const sorteio = db.sorteios.find((s) => s.id === sorteioId || s.slug === sorteioId);
+      if (!sorteio) {
+        return res.status(404).json({ error: "Sorteio não encontrado." });
+      }
+      pagamentos = pagamentos.filter((p) => p.sorteioId === sorteio.id);
+    }
+
+    pagamentos = pagamentos.sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    res.json(pagamentos);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao listar pagamentos." });
+  }
+});
+
+/**
+ * =========================================================
+ * EXPORTAÇÃO SIMPLES DOS PARTICIPANTES
+ * =========================================================
+ */
+app.get("/api/admin/sorteios/:id/participantes", async (req, res) => {
+  try {
+    const db = await readDb();
+    const { id } = req.params;
+
+    const sorteio = db.sorteios.find((s) => s.id === id || s.slug === id);
+    if (!sorteio) {
+      return res.status(404).json({ error: "Sorteio não encontrado." });
+    }
+
+    cleanupExpiredReservations(db);
+    await writeDb(db);
+
+    const reservas = db.reservas
+      .filter((r) => r.sorteioId === sorteio.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json(
+      reservas.map((r) => ({
+        nome: r.nome,
+        whatsapp: r.whatsapp,
+        numeros: r.numeros,
+        total: r.total,
+        status: r.status,
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+      }))
+    );
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao carregar participantes." });
+  }
+});
+
+/**
+ * =========================================================
+ * FALLBACK
+ * =========================================================
+ */
+app.use((req, res) => {
+  res.status(404).json({ error: "Rota não encontrada." });
+});
+
+/**
+ * =========================================================
+ * START
+ * =========================================================
+ */
 app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Servidor rodando em: http://localhost:${PORT}`);
 });
