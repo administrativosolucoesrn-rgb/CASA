@@ -24,11 +24,17 @@ function formatCurrency(value) {
   });
 }
 
-function formatDate(dateString) {
+function formatDateTime(dateString) {
   if (!dateString) return "Em breve";
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return "Em breve";
-  return date.toLocaleDateString("pt-BR");
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function safeArray(value) {
@@ -122,13 +128,16 @@ export default function SorteioPage() {
     "https://via.placeholder.com/1200x900?text=Premio";
   const title = sorteio?.title || "Casa Premiada Ribeirão";
   const description = sorteio?.descricao || sorteio?.subtitle || "";
-  const companyName = sorteio?.companyName || "Casa Premiada Ribeirão";
+
+  const reservedNumbers = safeArray(sorteio?.reservedNumbers).map(Number);
+  const paidNumbers = safeArray(sorteio?.paidNumbers).map(Number);
 
   const unavailableNumbers = useMemo(() => {
-    const reserved = safeArray(sorteio?.reservedNumbers);
-    const paid = safeArray(sorteio?.paidNumbers);
-    return new Set([...reserved, ...paid].map(Number));
+    return new Set([...reservedNumbers, ...paidNumbers]);
   }, [sorteio]);
+
+  const reservedSet = useMemo(() => new Set(reservedNumbers), [sorteio]);
+  const paidSet = useMemo(() => new Set(paidNumbers), [sorteio]);
 
   const totalValue = selectedNumbers.length * price;
 
@@ -305,7 +314,7 @@ export default function SorteioPage() {
       <div style={styles.centerWrap}>
         <div style={styles.loadingCard}>
           <div style={styles.loadingDot} />
-          <strong style={{ fontSize: 20 }}>Abrindo sorteio</strong>
+          <div style={styles.loadingText}>Carregando...</div>
         </div>
       </div>
     );
@@ -315,8 +324,8 @@ export default function SorteioPage() {
     return (
       <div style={styles.centerWrap}>
         <div style={styles.loadingCard}>
-          <strong>Não foi possível abrir este sorteio.</strong>
-          <div style={{ marginTop: 8 }}>{erro}</div>
+          <div style={styles.loadingText}>Não foi possível abrir este sorteio.</div>
+          <div style={{ marginTop: 8, color: "#667085" }}>{erro}</div>
         </div>
       </div>
     );
@@ -336,7 +345,7 @@ export default function SorteioPage() {
         >
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <strong style={{ fontSize: 18 }}>Pesquisar suas reservas</strong>
+              <div style={styles.modalTitle}>Meus números</div>
               <button
                 style={styles.closeBtn}
                 onClick={() => setMyNumbersOpen(false)}
@@ -356,14 +365,16 @@ export default function SorteioPage() {
             </div>
 
             <button style={styles.greenWideButton} onClick={searchMyNumbers}>
-              {myNumbersLoading ? "Pesquisando..." : "Pesquisar"}
+              {myNumbersLoading ? "Pesquisando..." : "Buscar números"}
             </button>
 
             {myNumbersResult ? (
               <div style={{ marginTop: 14 }}>
                 <div style={styles.resultBox}>
-                  <strong>{myNumbersResult?.nome || "Cliente"}</strong>
-                  <div style={{ marginTop: 8, lineHeight: 1.5 }}>
+                  <div style={styles.resultName}>
+                    {myNumbersResult?.nome || "Cliente"}
+                  </div>
+                  <div style={{ marginTop: 8, lineHeight: 1.5, color: "#344054" }}>
                     {(myNumbersResult?.numeros || []).length
                       ? myNumbersResult.numeros
                           .map((n) => `N° ${formatNumberLabel(n)}`)
@@ -455,7 +466,7 @@ export default function SorteioPage() {
               </>
             ) : (
               <div style={styles.pixModalContent}>
-                <div style={styles.orangeTitle}>Aguardando o pagamento!</div>
+                <div style={styles.orangeTitle}>Aguardando o pagamento</div>
                 <div style={styles.helpText}>
                   Finalize agora pelo PIX para garantir seus números.
                 </div>
@@ -476,12 +487,12 @@ export default function SorteioPage() {
 
                 <div style={styles.pixRow}>
                   <span>Nome</span>
-                  <strong>CASA PREMIADA</strong>
+                  <span>CASA PREMIADA</span>
                 </div>
 
                 <div style={styles.pixRow}>
                   <span>Valor total</span>
-                  <strong>{formatCurrency(totalValue)}</strong>
+                  <span>{formatCurrency(totalValue)}</span>
                 </div>
 
                 <div style={styles.field}>
@@ -529,7 +540,8 @@ export default function SorteioPage() {
         </div>
 
         <button style={styles.topAction} onClick={() => setMyNumbersOpen(true)}>
-          Ver meus números
+          <span style={styles.topActionIcon}>👁️🔎</span>
+          <span>Meus números</span>
         </button>
       </div>
 
@@ -545,46 +557,12 @@ export default function SorteioPage() {
 
             <div style={styles.infoTitleBox}>
               <div style={styles.infoLabel}>Prêmio</div>
-              <div style={styles.infoTitle}>{title}</div>
+              <div style={styles.infoValueMain}>{title}</div>
             </div>
 
             <div style={styles.infoMiniBox}>
-              <div style={styles.infoLabel}>Empresa</div>
-              <div style={styles.infoValue}>{companyName}</div>
-            </div>
-          </div>
-        </div>
-
-        <div style={styles.card}>
-          <div style={styles.metaRowSingle}>
-            <div style={styles.metaPill}>
-              Sorteio: {formatDate(sorteio?.drawDate)}
-            </div>
-          </div>
-
-          <div style={styles.shareHeaderRow}>
-            <div style={styles.shareTitle}>Compartilhar sorteio</div>
-
-            <div style={styles.shareRowCompact}>
-              {whatsappLink ? (
-                <a
-                  href={whatsappLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={styles.whatsappBtnSmall}
-                >
-                  WhatsApp
-                </a>
-              ) : null}
-
-              <button
-                style={styles.copyBtnSmall}
-                onClick={async () => {
-                  await navigator.clipboard.writeText(window.location.href);
-                }}
-              >
-                Copiar link
-              </button>
+              <div style={styles.infoLabel}>Data sorteio</div>
+              <div style={styles.infoValueSmall}>{formatDateTime(sorteio?.drawDate)}</div>
             </div>
           </div>
         </div>
@@ -599,6 +577,22 @@ export default function SorteioPage() {
         <div ref={numbersRef} style={styles.sectionHeadline}>
           <span style={styles.headlineBadge}>✨</span>
           Escolher números
+        </div>
+
+        <div style={styles.legendHint}>Toque no número que deseja comprar 👇</div>
+
+        <div style={styles.legendCard}>
+          <div style={styles.legendRow}>
+            <div style={{ ...styles.legendItem, background: "#e2e8f0", color: "#1f2937" }}>
+              Disponíveis
+            </div>
+            <div style={{ ...styles.legendItem, background: "#111827", color: "#fff" }}>
+              Reservados
+            </div>
+            <div style={{ ...styles.legendItem, background: "#166534", color: "#fff" }}>
+              Comprados
+            </div>
+          </div>
         </div>
 
         <div style={styles.quickCard}>
@@ -632,8 +626,15 @@ export default function SorteioPage() {
         <div style={styles.numberGrid}>
           {Array.from({ length: totalNumbers }, (_, index) => {
             const num = index + 1;
+            const isReserved = reservedSet.has(num);
+            const isPaid = paidSet.has(num);
             const isUnavailable = unavailableNumbers.has(num);
             const isSelected = selectedNumbers.includes(num);
+
+            let stateStyle = {};
+            if (isPaid) stateStyle = styles.numberPaid;
+            else if (isReserved) stateStyle = styles.numberUnavailable;
+            else if (isSelected) stateStyle = styles.numberActive;
 
             return (
               <button
@@ -642,8 +643,7 @@ export default function SorteioPage() {
                 disabled={isUnavailable}
                 style={{
                   ...styles.numberBtn,
-                  ...(isUnavailable ? styles.numberUnavailable : {}),
-                  ...(isSelected ? styles.numberActive : {}),
+                  ...stateStyle,
                 }}
               >
                 {String(num).padStart(3, "0")}
@@ -656,10 +656,10 @@ export default function SorteioPage() {
       {selectedNumbers.length > 0 ? (
         <div style={styles.cartBar}>
           <div style={styles.cartTopRow}>
-            <strong style={styles.cartCount}>
+            <span style={styles.cartCount}>
               {selectedNumbers.length} número(s)
-            </strong>
-            <strong style={styles.cartTotal}>{formatCurrency(totalValue)}</strong>
+            </span>
+            <span style={styles.cartTotal}>{formatCurrency(totalValue)}</span>
           </div>
 
           <div style={styles.cartNumbersInline}>
@@ -720,6 +720,11 @@ const styles = {
     background: "#10b981",
     margin: "0 auto 12px",
   },
+  loadingText: {
+    fontSize: 18,
+    color: "#1f2937",
+    fontWeight: 500,
+  },
   topBar: {
     position: "sticky",
     top: 0,
@@ -743,18 +748,26 @@ const styles = {
     objectFit: "contain",
   },
   logoFallback: {
-    fontSize: 22,
-    fontWeight: 900,
+    fontSize: 18,
+    fontWeight: 600,
     color: "#111827",
+    lineHeight: 1.1,
   },
   topAction: {
     border: "none",
     background: "#15803d",
     color: "#fff",
-    padding: "12px 16px",
+    padding: "10px 12px",
     borderRadius: 14,
-    fontSize: 16,
-    fontWeight: 900,
+    fontSize: 13,
+    fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  topActionIcon: {
+    fontSize: 14,
+    lineHeight: 1,
   },
   container: {
     maxWidth: 620,
@@ -770,7 +783,7 @@ const styles = {
   },
   heroImage: {
     width: "100%",
-    minHeight: 360,
+    minHeight: 320,
     maxHeight: 620,
     display: "block",
     objectFit: "cover",
@@ -781,26 +794,32 @@ const styles = {
     color: "#fff",
     padding: 16,
     display: "grid",
-    gridTemplateColumns: "1fr 1.15fr 1fr",
+    gridTemplateColumns: "1fr 1fr 1fr",
     gap: 10,
   },
   infoMiniBox: {},
   infoTitleBox: {},
   infoLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: "#bdbdbd",
     textTransform: "uppercase",
     marginBottom: 8,
+    fontWeight: 500,
   },
   infoValue: {
-    fontSize: 18,
-    fontWeight: 800,
+    fontSize: 16,
+    fontWeight: 600,
     lineHeight: 1.25,
   },
-  infoTitle: {
-    fontSize: 22,
-    fontWeight: 900,
+  infoValueMain: {
+    fontSize: 18,
+    fontWeight: 600,
     lineHeight: 1.15,
+  },
+  infoValueSmall: {
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.35,
   },
   card: {
     background: "#fff",
@@ -809,71 +828,22 @@ const styles = {
     boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
     marginBottom: 16,
   },
-  metaRowSingle: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 10,
-    marginBottom: 16,
-  },
-  metaPill: {
-    background: "#f8fafc",
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: "14px 16px",
-    textAlign: "center",
-    fontWeight: 900,
-    fontSize: 18,
-  },
-  shareHeaderRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    flexWrap: "wrap",
-  },
-  shareTitle: {
-    fontSize: 16,
-    fontWeight: 900,
-    color: "#1f2937",
-  },
-  shareRowCompact: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  whatsappBtnSmall: {
-    textDecoration: "none",
-    background: "#22c55e",
-    color: "#fff",
-    padding: "10px 14px",
-    textAlign: "center",
-    borderRadius: 14,
-    fontSize: 15,
-    fontWeight: 900,
-  },
-  copyBtnSmall: {
-    background: "#fff",
-    color: "#111827",
-    border: "1px solid #d0d5dd",
-    borderRadius: 14,
-    padding: "10px 14px",
-    fontSize: 15,
-    fontWeight: 900,
-  },
   sectionTitle: {
-    fontSize: 20,
-    fontWeight: 900,
+    fontSize: 18,
+    fontWeight: 600,
     marginBottom: 10,
+    color: "#111827",
   },
   description: {
-    fontSize: 18,
+    fontSize: 16,
     lineHeight: 1.55,
     color: "#344054",
+    fontWeight: 400,
   },
   sectionHeadline: {
-    margin: "24px 0 14px",
+    margin: "24px 0 12px",
     fontSize: 22,
-    fontWeight: 900,
+    fontWeight: 600,
     lineHeight: 1.15,
     color: "#111827",
     display: "flex",
@@ -890,6 +860,31 @@ const styles = {
     background: "#fff6d8",
     border: "1px solid #f4d36f",
     fontSize: 18,
+  },
+  legendHint: {
+    color: "#667085",
+    fontSize: 14,
+    marginBottom: 10,
+    fontWeight: 400,
+  },
+  legendCard: {
+    background: "#fff",
+    borderRadius: 16,
+    padding: 12,
+    border: "1px solid #e5e7eb",
+    marginBottom: 14,
+  },
+  legendRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 8,
+  },
+  legendItem: {
+    borderRadius: 10,
+    padding: "10px 8px",
+    textAlign: "center",
+    fontSize: 12,
+    fontWeight: 500,
   },
   quickCard: {
     background: "linear-gradient(180deg, #fffdf6 0%, #fff8dc 100%)",
@@ -917,8 +912,8 @@ const styles = {
     boxShadow: "0 8px 18px rgba(246,201,72,0.35)",
   },
   quickTitle: {
-    fontSize: 18,
-    fontWeight: 900,
+    fontSize: 17,
+    fontWeight: 600,
     lineHeight: 1.1,
     color: "#111827",
   },
@@ -926,6 +921,7 @@ const styles = {
     fontSize: 13,
     color: "#475467",
     marginTop: 2,
+    fontWeight: 400,
   },
   quickGrid: {
     display: "grid",
@@ -933,33 +929,38 @@ const styles = {
     gap: 8,
   },
   quickBtn: {
-    minHeight: 44,
+    minHeight: 42,
     border: "none",
     borderRadius: 14,
     background: "#f6c948",
     color: "#111827",
-    fontWeight: 900,
-    fontSize: 18,
+    fontWeight: 600,
+    fontSize: 17,
   },
   numberGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, 1fr)",
-    gap: 8,
+    gridTemplateColumns: "repeat(6, 1fr)",
+    gap: 7,
   },
   numberBtn: {
-    minHeight: 50,
-    borderRadius: 14,
+    minHeight: 42,
+    borderRadius: 12,
     border: "1.5px solid #d0d5dd",
     background: "#fff",
     color: "#111827",
-    fontSize: 16,
-    fontWeight: 900,
-    boxShadow: "0 6px 14px rgba(15,23,42,0.04)",
+    fontSize: 13,
+    fontWeight: 500,
+    boxShadow: "0 4px 10px rgba(15,23,42,0.04)",
   },
   numberUnavailable: {
-    background: "#edf1f5",
-    color: "#98a2b3",
-    border: "1.5px solid #e4e7ec",
+    background: "#111827",
+    color: "#fff",
+    border: "1.5px solid #111827",
+  },
+  numberPaid: {
+    background: "#166534",
+    color: "#fff",
+    border: "1.5px solid #166534",
   },
   numberActive: {
     background: "linear-gradient(135deg, #10b981, #0f8f4c)",
@@ -972,6 +973,7 @@ const styles = {
     fontSize: 15,
     lineHeight: 1.5,
     marginBottom: 14,
+    fontWeight: 400,
   },
   field: {
     display: "flex",
@@ -981,7 +983,7 @@ const styles = {
   },
   label: {
     fontSize: 14,
-    fontWeight: 800,
+    fontWeight: 500,
     color: "#344054",
   },
   input: {
@@ -1000,6 +1002,7 @@ const styles = {
     borderRadius: 14,
     padding: 12,
     marginBottom: 12,
+    fontWeight: 400,
   },
   payBtn: {
     flex: 1,
@@ -1008,12 +1011,12 @@ const styles = {
     borderRadius: 16,
     background: "#15803d",
     color: "#fff",
-    fontSize: 18,
-    fontWeight: 900,
+    fontSize: 17,
+    fontWeight: 600,
   },
   orangeTitle: {
-    fontSize: 26,
-    fontWeight: 900,
+    fontSize: 24,
+    fontWeight: 600,
     color: "#d97706",
     marginBottom: 6,
   },
@@ -1028,7 +1031,9 @@ const styles = {
     gap: 12,
     alignItems: "center",
     marginBottom: 12,
-    fontSize: 17,
+    fontSize: 16,
+    color: "#344054",
+    fontWeight: 400,
   },
   copyRow: {
     display: "grid",
@@ -1042,7 +1047,7 @@ const styles = {
     borderRadius: 14,
     background: "#f4d36f",
     padding: "0 16px",
-    fontWeight: 900,
+    fontWeight: 600,
   },
   sendBtn: {
     display: "block",
@@ -1052,8 +1057,8 @@ const styles = {
     color: "#fff",
     borderRadius: 14,
     padding: "16px",
-    fontSize: 18,
-    fontWeight: 900,
+    fontSize: 17,
+    fontWeight: 600,
     marginTop: 12,
   },
   floatingWrap: {
@@ -1070,8 +1075,8 @@ const styles = {
     borderRadius: 18,
     background: "linear-gradient(135deg, #10b981, #0f8f4c)",
     color: "#fff",
-    fontSize: 19,
-    fontWeight: 900,
+    fontSize: 18,
+    fontWeight: 600,
     boxShadow: "0 14px 24px rgba(16,185,129,0.28)",
   },
   cartBar: {
@@ -1096,10 +1101,12 @@ const styles = {
   cartCount: {
     fontSize: 14,
     color: "#111827",
+    fontWeight: 500,
   },
   cartTotal: {
     fontSize: 18,
     color: "#15803d",
+    fontWeight: 600,
   },
   cartNumbersInline: {
     display: "flex",
@@ -1115,7 +1122,7 @@ const styles = {
     border: "1px solid #b7e4c7",
     borderRadius: 999,
     padding: "6px 10px",
-    fontWeight: 900,
+    fontWeight: 500,
     fontSize: 12,
   },
   cartActionRow: {
@@ -1129,8 +1136,8 @@ const styles = {
     border: "1px solid #d0d5dd",
     background: "#fff",
     color: "#111827",
-    fontWeight: 900,
-    fontSize: 16,
+    fontWeight: 500,
+    fontSize: 15,
   },
   cartPayBtn: {
     minHeight: 50,
@@ -1138,8 +1145,8 @@ const styles = {
     border: "none",
     background: "linear-gradient(135deg, #1db874, #149954)",
     color: "#fff",
-    fontWeight: 900,
-    fontSize: 16,
+    fontWeight: 600,
+    fontSize: 15,
     boxShadow: "0 12px 22px rgba(16,185,129,0.20)",
   },
   modalOverlay: {
@@ -1187,15 +1194,15 @@ const styles = {
     marginBottom: 14,
   },
   paymentTitle: {
-    fontSize: 22,
-    fontWeight: 900,
+    fontSize: 21,
+    fontWeight: 600,
     color: "#111827",
   },
   paymentSub: {
     marginTop: 4,
     color: "#667085",
     fontSize: 14,
-    fontWeight: 700,
+    fontWeight: 400,
   },
   cartNumbersBoxModal: {
     background: "#f8fafc",
@@ -1206,7 +1213,7 @@ const styles = {
   },
   cartNumbersLabel: {
     fontSize: 13,
-    fontWeight: 900,
+    fontWeight: 500,
     color: "#344054",
     marginBottom: 8,
   },
@@ -1216,7 +1223,7 @@ const styles = {
     border: "1px solid #ccebd8",
     borderRadius: 999,
     padding: "7px 11px",
-    fontWeight: 900,
+    fontWeight: 500,
     fontSize: 12,
   },
   modalActions: {
@@ -1231,8 +1238,8 @@ const styles = {
     border: "1px solid #d0d5dd",
     background: "#fff",
     color: "#111827",
-    fontSize: 16,
-    fontWeight: 900,
+    fontSize: 15,
+    fontWeight: 500,
   },
   pixModalContent: {
     paddingTop: 4,
@@ -1243,12 +1250,18 @@ const styles = {
     alignItems: "center",
     marginBottom: 14,
   },
+  modalTitle: {
+    fontSize: 20,
+    color: "#111827",
+    fontWeight: 600,
+  },
   closeBtn: {
     border: "none",
     background: "transparent",
-    fontSize: 36,
+    fontSize: 34,
     lineHeight: 1,
     color: "#667085",
+    fontWeight: 400,
   },
   greenWideButton: {
     width: "100%",
@@ -1257,13 +1270,18 @@ const styles = {
     borderRadius: 16,
     background: "#15803d",
     color: "#fff",
-    fontSize: 18,
-    fontWeight: 900,
+    fontSize: 17,
+    fontWeight: 600,
   },
   resultBox: {
     background: "#f8fafc",
     border: "1px solid #e5e7eb",
     borderRadius: 16,
     padding: 14,
+  },
+  resultName: {
+    color: "#111827",
+    fontSize: 16,
+    fontWeight: 600,
   },
 };
