@@ -20,6 +20,8 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
 const PAGARME_API_URL = "https://api.pagar.me/core/v5";
+const PAGARME_DEFAULT_DOCUMENT = process.env.PAGARME_DEFAULT_DOCUMENT || "";
+const PAGARME_DEFAULT_EMAIL = process.env.PAGARME_DEFAULT_EMAIL || "pagamento@casapremiada.com";
 
 const PIX_KEY = process.env.PIX_KEY || "SEU_PIX_AQUI";
 const PIX_MERCHANT_NAME = process.env.PIX_MERCHANT_NAME || "CASA PREMIADA";
@@ -84,6 +86,62 @@ const upload = multer({
  */
 function pagarmeBasicAuth() {
   return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
+}
+
+
+function normalizeDocument(value = "") {
+  return String(value).replace(/\D/g, "").slice(0, 14);
+}
+
+function normalizeEmail(value = "") {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getPhonePartsForPagarme(phoneDigits = "") {
+  const digits = normalizePhone(phoneDigits);
+
+  if (digits.length < 10) {
+    return {
+      country_code: "55",
+      area_code: "",
+      number: "",
+    };
+  }
+
+  let local = digits;
+  if (digits.startsWith("55") && digits.length >= 12) {
+    local = digits.slice(2);
+  }
+
+  return {
+    country_code: "55",
+    area_code: local.slice(0, 2),
+    number: local.slice(2),
+  };
+}
+
+function getCustomerDocument(req) {
+  return normalizeDocument(
+    req.body.document ||
+      req.body.cpf ||
+      req.body.cnpj ||
+      PAGARME_DEFAULT_DOCUMENT
+  );
+}
+
+function getCustomerEmail(req, whatsapp) {
+  const explicitEmail = normalizeEmail(req.body.email || "");
+  if (explicitEmail) return explicitEmail;
+
+  const digits = normalizePhone(whatsapp);
+  if (digits) return `cliente${digits}@casapremiada.local`;
+
+  return PAGARME_DEFAULT_EMAIL;
+}
+
+function getCustomerTypeFromDocument(document) {
+  if (String(document).length === 14) return "company";
+  return "individual";
 }
 
 function ensureFoldersAndDb() {
@@ -1074,6 +1132,8 @@ app.post("/api/pix", async (req, res) => {
     const nome = normalizeName(req.body.nome || "");
     const whatsapp = normalizePhone(req.body.whatsapp || "");
     const numeros = sanitizeReservedNumbers(req.body.numeros || []);
+    const document = getCustomerDocument(req);
+    const email = getCustomerEmail(req, whatsapp);
 
     if (!slug) {
       return res.status(400).json({ error: "Slug do sorteio é obrigatório." });
@@ -1089,6 +1149,12 @@ app.post("/api/pix", async (req, res) => {
 
     if (!numeros.length) {
       return res.status(400).json({ error: "Escolha ao menos um número." });
+    }
+
+    if (![11, 14].includes(String(document).length)) {
+      return res.status(400).json({
+        error: "CPF/CNPJ obrigatório para gerar PIX no Pagar.me.",
+      });
     }
 
     const sorteio = db.sorteios.find((s) => s.slug === slug || s.id === slug);
@@ -1133,8 +1199,7 @@ app.post("/api/pix", async (req, res) => {
       expiresAt: addMinutes(new Date(), RESERVATION_EXPIRES_MINUTES).toISOString(),
     });
 
-    const areaCode = whatsapp.slice(0, 2);
-    const phoneNumber = whatsapp.slice(2);
+    const phoneParts = getPhonePartsForPagarme(whatsapp);
     const amount = Math.round(Number(reserva.total || 0) * 100);
 
     const orderBody = {
@@ -1148,12 +1213,14 @@ app.post("/api/pix", async (req, res) => {
       ],
       customer: {
         name: nome,
-        type: "individual",
+        email,
+        document,
+        type: getCustomerTypeFromDocument(document),
         phones: {
           mobile_phone: {
-            country_code: "55",
-            area_code: areaCode,
-            number: phoneNumber,
+            country_code: phoneParts.country_code,
+            area_code: phoneParts.area_code,
+            number: phoneParts.number,
           },
         },
       },
