@@ -347,7 +347,6 @@ function getSorteioDisplay(sorteio, db) {
       (r) =>
         r.sorteioId === sorteio.id &&
         r.status === "reservado" &&
-        !r.bloco &&
         !isExpired(r.expiresAt)
     )
     .flatMap((r) => r.numeros);
@@ -390,7 +389,6 @@ function getUnavailableNumbersForSorteio(sorteioId, db, ignoreReservaId = null) 
       (r) =>
         r.sorteioId === sorteioId &&
         r.status === "reservado" &&
-        !r.bloco &&
         !isExpired(r.expiresAt) &&
         (ignoreReservaId ? r.id !== ignoreReservaId : true)
     )
@@ -1079,6 +1077,7 @@ app.post(
         });
       };
 
+      // Esses blocos também ficam indisponíveis no site público.
       criarBloco(151, 300, "mae", "Vendas externas mãe");
       criarBloco(301, 450, "pai", "Vendas externas pai");
       criarBloco(451, 550, "vo", "Vendas externas vó");
