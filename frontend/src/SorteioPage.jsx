@@ -4,37 +4,92 @@ import { useParams } from "react-router-dom";
 const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
 
+const STORAGE_KEY = "casa_premiada_cliente";
+
+function onlyDigits(value = "") {
+  return String(value).replace(/\D/g, "");
+}
+
+function formatPhone(value = "") {
+  const digits = onlyDigits(value).slice(0, 11);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function formatCurrency(value) {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function formatDate(dateString) {
+  if (!dateString) return "Em breve";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "Em breve";
+  return date.toLocaleDateString("pt-BR");
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 export default function SorteioPage() {
   const { slug } = useParams();
 
   const [loading, setLoading] = useState(true);
-  const [sorteio, setSorteio] = useState(null);
   const [erro, setErro] = useState("");
+  const [sorteio, setSorteio] = useState(null);
 
   const [selectedNumbers, setSelectedNumbers] = useState([]);
+  const [showCheckout, setShowCheckout] = useState(false);
+
   const [customer, setCustomer] = useState({
     nome: "",
     whatsapp: "",
   });
 
-  const [submittingReserve, setSubmittingReserve] = useState(false);
-  const [submittingPix, setSubmittingPix] = useState(false);
-
-  const [showBuyerPanel, setShowBuyerPanel] = useState(false);
   const [pixData, setPixData] = useState(null);
-  const [reserveResponse, setReserveResponse] = useState(null);
-
-  const [successMessage, setSuccessMessage] = useState("");
+  const [submittingPix, setSubmittingPix] = useState(false);
   const [copiedPix, setCopiedPix] = useState(false);
 
-  const numbersSectionRef = useRef(null);
+  const [myNumbersOpen, setMyNumbersOpen] = useState(false);
+  const [myNumbersPhone, setMyNumbersPhone] = useState("");
+  const [myNumbersLoading, setMyNumbersLoading] = useState(false);
+  const [myNumbersResult, setMyNumbersResult] = useState(null);
+
+  const numbersRef = useRef(null);
+  const checkoutRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      setCustomer({
+        nome: parsed?.nome || "",
+        whatsapp: parsed?.whatsapp || "",
+      });
+      setMyNumbersPhone(parsed?.whatsapp || "");
+    } catch {
+      //
+    }
+  }, []);
 
   useEffect(() => {
     if (!slug) return;
     loadSorteio();
-    loadCustomerFromBackend();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
+
+  async function safeJson(res) {
+    const text = await res.text();
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
+    }
+  }
 
   async function loadSorteio() {
     try {
@@ -42,7 +97,7 @@ export default function SorteioPage() {
       setErro("");
 
       const res = await fetch(`${API_URL}/api/sorteios/${slug}`);
-      const data = await res.json();
+      const data = await safeJson(res);
 
       if (!res.ok) {
         throw new Error(data?.error || "Não foi possível carregar o sorteio.");
@@ -50,297 +105,131 @@ export default function SorteioPage() {
 
       setSorteio(data);
     } catch (err) {
-      setErro(err.message || "Erro ao carregar o sorteio.");
+      setErro(err.message || "Erro ao carregar sorteio.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadCustomerFromBackend() {
-    try {
-      const savedPhone =
-        localStorage.getItem("casa_premiada_whatsapp") || "";
-
-      if (!savedPhone) return;
-
-      const res = await fetch(
-        `${API_URL}/api/clientes/buscar?whatsapp=${encodeURIComponent(savedPhone)}`
-      );
-
-      if (!res.ok) return;
-
-      const data = await res.json();
-
-      if (data?.cliente) {
-        setCustomer({
-          nome: data.cliente.nome || "",
-          whatsapp: data.cliente.whatsapp || savedPhone,
-        });
-      }
-    } catch {
-      // silencioso para não travar a página pública
-    }
+  function persistCustomer(next) {
+    setCustomer(next);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   }
 
-  const totalNumbers = Number(sorteio?.totalNumbers || sorteio?.quantidadeNumeros || 0);
-  const ticketPrice = Number(sorteio?.price || sorteio?.valor || 0);
-
-  const unavailableNumbers = useMemo(() => {
-    if (!sorteio) return new Set();
-
-    const reserved = Array.isArray(sorteio?.reservedNumbers)
-      ? sorteio.reservedNumbers
-      : [];
-    const paid = Array.isArray(sorteio?.paidNumbers) ? sorteio.paidNumbers : [];
-    const sold = Array.isArray(sorteio?.soldNumbers) ? sorteio.soldNumbers : [];
-
-    return new Set([...reserved, ...paid, ...sold].map(Number));
-  }, [sorteio]);
-
-  const totalValue = useMemo(() => {
-    return selectedNumbers.length * ticketPrice;
-  }, [selectedNumbers.length, ticketPrice]);
-
+  const totalNumbers = Number(sorteio?.totalNumbers || 0);
+  const price = Number(sorteio?.price || 0);
   const heroImage =
     sorteio?.image ||
-    sorteio?.imagem ||
-    sorteio?.premioImagem ||
     "https://via.placeholder.com/1200x900?text=Premio";
+  const title = sorteio?.title || "Casa Premiada Ribeirão";
+  const description = sorteio?.descricao || sorteio?.subtitle || "";
+  const companyName = sorteio?.companyName || "Casa Premiada Ribeirão";
 
-  const campaignTitle =
-    sorteio?.title || sorteio?.titulo || "Casa Premiada Ribeirão";
-
-  const prizeTitle =
-    sorteio?.subtitle ||
-    sorteio?.descricao ||
-    sorteio?.premioNome ||
-    "Escolha seus números e participe";
-
-  const drawDate =
-    sorteio?.drawDate || sorteio?.dataSorteio || sorteio?.date || "";
-
-  const companyName =
-    sorteio?.companyName ||
-    sorteio?.empresa ||
-    "Casa Premiada Ribeirão";
-
-  const whatsappLink = useMemo(() => {
-    const raw =
-      sorteio?.whatsapp ||
-      sorteio?.telefone ||
-      sorteio?.numeroWhatsapp ||
-      "";
-    const digits = String(raw).replace(/\D/g, "");
-    if (!digits) return "";
-    return `https://wa.me/${digits}`;
+  const unavailableNumbers = useMemo(() => {
+    const reserved = safeArray(sorteio?.reservedNumbers);
+    const paid = safeArray(sorteio?.paidNumbers);
+    return new Set([...reserved, ...paid].map(Number));
   }, [sorteio]);
 
-  const shareLink =
-    typeof window !== "undefined" ? window.location.href : "";
+  const totalValue = selectedNumbers.length * price;
 
-  function scrollToNumbers() {
-    numbersSectionRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }
-
-  function formatCurrency(value) {
-    return Number(value || 0).toLocaleString("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    });
-  }
-
-  function formatDate(dateValue) {
-    if (!dateValue) return "";
-    const date = new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return String(dateValue);
-
-    return date.toLocaleDateString("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-  }
+  const whatsappLink = useMemo(() => {
+    const digits = onlyDigits(sorteio?.whatsapp || "");
+    return digits ? `https://wa.me/${digits}` : "";
+  }, [sorteio]);
 
   function formatNumberLabel(num) {
-    const digits = String(totalNumbers).length >= 4 ? 4 : 3;
-    return String(num).padStart(digits, "0");
-  }
-
-  function sanitizePhone(value) {
-    return value.replace(/\D/g, "").slice(0, 11);
-  }
-
-  function formatWhatsapp(value) {
-    const digits = sanitizePhone(value);
-
-    if (digits.length <= 2) return digits;
-    if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-    if (digits.length <= 11) {
-      return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
-    }
-    return value;
+    return `N° ${String(num).padStart(3, "0")}`;
   }
 
   function handleCustomerChange(field, value) {
-    if (field === "whatsapp") {
-      const digits = sanitizePhone(value);
-      setCustomer((prev) => ({ ...prev, whatsapp: digits }));
-      localStorage.setItem("casa_premiada_whatsapp", digits);
-      return;
-    }
+    const next = {
+      ...customer,
+      [field]: field === "whatsapp" ? onlyDigits(value) : value,
+    };
+    persistCustomer(next);
+  }
 
-    setCustomer((prev) => ({ ...prev, [field]: value }));
+  function scrollToNumbers() {
+    numbersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function getAvailableNumbers() {
+    const list = [];
+    for (let i = 1; i <= totalNumbers; i += 1) {
+      if (!unavailableNumbers.has(i) && !selectedNumbers.includes(i)) {
+        list.push(i);
+      }
+    }
+    return list;
   }
 
   function toggleNumber(num) {
     if (unavailableNumbers.has(num)) return;
-
     setPixData(null);
-    setReserveResponse(null);
-    setSuccessMessage("");
 
     setSelectedNumbers((prev) => {
       const exists = prev.includes(num);
+      const updated = exists
+        ? prev.filter((n) => n !== num)
+        : [...prev, num].sort((a, b) => a - b);
 
-      if (exists) {
-        const updated = prev.filter((n) => n !== num);
-        if (updated.length === 0) setShowBuyerPanel(false);
-        return updated;
-      }
-
-      const updated = [...prev, num].sort((a, b) => a - b);
-      setShowBuyerPanel(true);
+      setShowCheckout(updated.length > 0);
       return updated;
     });
+
+    setTimeout(() => {
+      checkoutRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 120);
   }
 
-  function getAvailableNumbersList() {
-    const available = [];
-    for (let i = 1; i <= totalNumbers; i += 1) {
-      if (!unavailableNumbers.has(i) && !selectedNumbers.includes(i)) {
-        available.push(i);
-      }
-    }
-    return available;
-  }
+  function pickRandom(quantity) {
+    const available = getAvailableNumbers();
+    if (!available.length) return;
 
-  function selectRandomNumbers(quantity) {
-    setPixData(null);
-    setReserveResponse(null);
-    setSuccessMessage("");
-
-    const available = getAvailableNumbersList();
-
-    if (available.length === 0) return;
-
-    const shuffled = [...available].sort(() => Math.random() - 0.5);
-    const chosen = shuffled.slice(0, quantity);
-
-    if (chosen.length === 0) return;
+    const chosen = [...available]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, quantity);
 
     setSelectedNumbers((prev) =>
       [...new Set([...prev, ...chosen])].sort((a, b) => a - b)
     );
-    setShowBuyerPanel(true);
+    setShowCheckout(true);
+    setPixData(null);
 
     setTimeout(() => {
-      numbersSectionRef.current?.scrollIntoView({
+      checkoutRef.current?.scrollIntoView({
         behavior: "smooth",
         block: "start",
       });
-    }, 100);
+    }, 120);
   }
 
-  function clearSelection() {
-    setSelectedNumbers([]);
-    setPixData(null);
-    setReserveResponse(null);
-    setSuccessMessage("");
-    setShowBuyerPanel(false);
-  }
-
-  async function handleReserve() {
+  async function handlePix() {
     try {
       setErro("");
-      setSuccessMessage("");
-
-      if (!customer.nome.trim()) {
-        throw new Error("Digite seu nome completo.");
-      }
-
-      if (sanitizePhone(customer.whatsapp).length < 10) {
-        throw new Error("Digite um WhatsApp válido.");
-      }
-
-      if (!selectedNumbers.length) {
-        throw new Error("Escolha pelo menos um número.");
-      }
-
-      setSubmittingReserve(true);
-
-      const payload = {
-        slug,
-        nome: customer.nome.trim(),
-        whatsapp: sanitizePhone(customer.whatsapp),
-        numeros: selectedNumbers,
-      };
-
-      const res = await fetch(`${API_URL}/api/reservas`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Não foi possível reservar agora.");
-      }
-
-      setReserveResponse(data);
-      setSuccessMessage("Números reservados com sucesso.");
-      localStorage.setItem(
-        "casa_premiada_whatsapp",
-        sanitizePhone(customer.whatsapp)
-      );
-
-      await loadSorteio();
-    } catch (err) {
-      setErro(err.message || "Erro ao reservar números.");
-    } finally {
-      setSubmittingReserve(false);
-    }
-  }
-
-  async function handlePixPayment() {
-    try {
-      setErro("");
-      setSuccessMessage("");
-      setCopiedPix(false);
-
-      if (!customer.nome.trim()) {
-        throw new Error("Digite seu nome completo.");
-      }
-
-      if (sanitizePhone(customer.whatsapp).length < 10) {
-        throw new Error("Digite um WhatsApp válido.");
-      }
-
-      if (!selectedNumbers.length) {
-        throw new Error("Escolha pelo menos um número.");
-      }
-
       setSubmittingPix(true);
+      setPixData(null);
+
+      if (!customer.nome.trim()) {
+        throw new Error("Digite seu nome.");
+      }
+
+      if (onlyDigits(customer.whatsapp).length < 10) {
+        throw new Error("Digite um celular válido.");
+      }
+
+      if (!selectedNumbers.length) {
+        throw new Error("Escolha pelo menos um número.");
+      }
 
       const payload = {
         slug,
         nome: customer.nome.trim(),
-        whatsapp: sanitizePhone(customer.whatsapp),
+        whatsapp: onlyDigits(customer.whatsapp),
         numeros: selectedNumbers,
       };
 
@@ -352,35 +241,23 @@ export default function SorteioPage() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const data = await safeJson(res);
 
       if (!res.ok) {
-        throw new Error(data?.error || "Não foi possível gerar o Pix.");
+        throw new Error(data?.error || "Não foi possível gerar o PIX.");
       }
 
       setPixData(data);
-      setSuccessMessage("Pix gerado com sucesso.");
-
-      if (!reserveResponse) {
-        setReserveResponse({
-          reservaId: data?.reservaId,
-          status: "reservado",
-        });
-      }
-
-      localStorage.setItem(
-        "casa_premiada_whatsapp",
-        sanitizePhone(customer.whatsapp)
-      );
-
       await loadSorteio();
 
       setTimeout(() => {
-        const pixBox = document.getElementById("pix-box");
-        pixBox?.scrollIntoView({ behavior: "smooth", block: "center" });
+        document.getElementById("pix-box")?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
       }, 150);
     } catch (err) {
-      setErro(err.message || "Erro ao gerar Pix.");
+      setErro(err.message || "Erro ao gerar PIX.");
     } finally {
       setSubmittingPix(false);
     }
@@ -393,1145 +270,843 @@ export default function SorteioPage() {
         pixData?.pixCode ||
         pixData?.copiaecola ||
         "";
-      if (!code) return;
 
+      if (!code) return;
       await navigator.clipboard.writeText(code);
       setCopiedPix(true);
-
-      setTimeout(() => setCopiedPix(false), 2000);
+      setTimeout(() => setCopiedPix(false), 1800);
     } catch {
       setCopiedPix(false);
     }
   }
 
-  async function sharePage() {
+  async function searchMyNumbers() {
     try {
-      if (navigator.share) {
-        await navigator.share({
-          title: campaignTitle,
-          text: `Participe agora: ${campaignTitle}`,
-          url: shareLink,
-        });
-        return;
+      setErro("");
+      setMyNumbersLoading(true);
+      setMyNumbersResult(null);
+
+      const phone = onlyDigits(myNumbersPhone);
+      if (phone.length < 10) {
+        throw new Error("Digite seu telefone.");
       }
 
-      await navigator.clipboard.writeText(shareLink);
-      alert("Link copiado com sucesso.");
-    } catch {
-      // silencioso
+      const res = await fetch(
+        `${API_URL}/api/meus-numeros/${slug}?whatsapp=${encodeURIComponent(phone)}`
+      );
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "Não foi possível consultar seus números."
+        );
+      }
+
+      setMyNumbersResult(data);
+    } catch (err) {
+      setErro(err.message || "Erro ao consultar.");
+    } finally {
+      setMyNumbersLoading(false);
     }
   }
 
   if (loading) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: "#f7f8fa",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "Arial, sans-serif",
-          padding: 24,
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 420,
-            background: "#fff",
-            borderRadius: 24,
-            padding: 28,
-            boxShadow: "0 10px 35px rgba(0,0,0,0.08)",
-            textAlign: "center",
-          }}
-        >
-          <div
-            style={{
-              width: 56,
-              height: 56,
-              borderRadius: "50%",
-              border: "4px solid #e8f5ee",
-              borderTop: "4px solid #1f9d55",
-              margin: "0 auto 18px",
-              animation: "spin 1s linear infinite",
-            }}
-          />
-          <div
-            style={{
-              fontSize: 18,
-              fontWeight: 700,
-              color: "#182028",
-              marginBottom: 6,
-            }}
-          >
-            Abrindo sorteio
-          </div>
-          <div style={{ color: "#667085", fontSize: 14 }}>
-            Aguarde só um instante...
-          </div>
-
-          <style>{`
-            @keyframes spin {
-              to { transform: rotate(360deg); }
-            }
-          `}</style>
+      <div style={styles.centerWrap}>
+        <div style={styles.loadingCard}>
+          <div style={styles.loadingDot} />
+          <strong style={{ fontSize: 20 }}>Abrindo sorteio</strong>
         </div>
       </div>
     );
   }
 
-  if (erro && !sorteio) {
+  if (!sorteio) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: "#f7f8fa",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "Arial, sans-serif",
-          padding: 20,
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 480,
-            background: "#fff",
-            borderRadius: 24,
-            padding: 28,
-            boxShadow: "0 10px 35px rgba(0,0,0,0.08)",
-            textAlign: "center",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 22,
-              fontWeight: 800,
-              color: "#111827",
-              marginBottom: 12,
-            }}
-          >
-            Não foi possível abrir este sorteio
-          </div>
-          <div style={{ color: "#667085", marginBottom: 18 }}>{erro}</div>
-          <button
-            onClick={loadSorteio}
-            style={primaryButtonStyle}
-          >
-            Tentar novamente
-          </button>
+      <div style={styles.centerWrap}>
+        <div style={styles.loadingCard}>
+          <strong>Não foi possível abrir este sorteio.</strong>
+          <div style={{ marginTop: 8 }}>{erro}</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#f5f7fb",
-        fontFamily: "Arial, sans-serif",
-        color: "#182028",
-        paddingBottom: selectedNumbers.length ? 160 : 100,
-      }}
-    >
+    <div style={styles.page}>
       <style>{`
         * { box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
-        body { margin: 0; background: #f5f7fb; }
-        button { font-family: inherit; }
+        body { margin: 0; background: #eef2ef; }
       `}</style>
 
-      <div style={{ maxWidth: 560, margin: "0 auto" }}>
-        <section
-          style={{
-            position: "relative",
-            overflow: "hidden",
-            borderBottomLeftRadius: 28,
-            borderBottomRightRadius: 28,
-            background: "#fff",
-            boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
-          }}
+      {myNumbersOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => setMyNumbersOpen(false)}
         >
-          <div style={{ position: "relative" }}>
-            <img
-              src={heroImage}
-              alt={campaignTitle}
-              style={{
-                width: "100%",
-                height: "auto",
-                display: "block",
-                objectFit: "cover",
-                maxHeight: 520,
-                background: "#edf1f5",
-              }}
-            />
-
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                background:
-                  "linear-gradient(to top, rgba(0,0,0,0.48), rgba(0,0,0,0.08), rgba(0,0,0,0))",
-              }}
-            />
-
-            <div
-              style={{
-                position: "absolute",
-                left: 16,
-                right: 16,
-                bottom: 16,
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-              }}
-            >
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignSelf: "flex-start",
-                  background: "rgba(255,255,255,0.16)",
-                  color: "#fff",
-                  border: "1px solid rgba(255,255,255,0.25)",
-                  borderRadius: 999,
-                  padding: "8px 14px",
-                  fontWeight: 700,
-                  fontSize: 12,
-                  backdropFilter: "blur(6px)",
-                }}
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <strong style={{ fontSize: 18 }}>Pesquisar suas reservas</strong>
+              <button
+                style={styles.closeBtn}
+                onClick={() => setMyNumbersOpen(false)}
               >
-                {companyName}
-              </div>
-
-              <div
-                style={{
-                  color: "#fff",
-                  fontSize: 28,
-                  fontWeight: 800,
-                  lineHeight: 1.1,
-                  textShadow: "0 2px 18px rgba(0,0,0,0.28)",
-                }}
-              >
-                {campaignTitle}
-              </div>
-
-              <div
-                style={{
-                  color: "rgba(255,255,255,0.92)",
-                  fontSize: 14,
-                  lineHeight: 1.45,
-                  maxWidth: 440,
-                }}
-              >
-                {prizeTitle}
-              </div>
+                ×
+              </button>
             </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Telefone cadastrado</label>
+              <input
+                style={styles.input}
+                value={formatPhone(myNumbersPhone)}
+                onChange={(e) => setMyNumbersPhone(onlyDigits(e.target.value))}
+                placeholder="(00) 00000-0000"
+              />
+            </div>
+
+            <button style={styles.greenWideButton} onClick={searchMyNumbers}>
+              {myNumbersLoading ? "Pesquisando..." : "Pesquisar"}
+            </button>
+
+            {myNumbersResult ? (
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.resultBox}>
+                  <strong>{myNumbersResult?.nome || "Cliente"}</strong>
+                  <div style={{ marginTop: 8, lineHeight: 1.5 }}>
+                    {(myNumbersResult?.numeros || []).length
+                      ? myNumbersResult.numeros
+                          .map((n) => formatNumberLabel(n))
+                          .join(", ")
+                      : "Nenhum número encontrado."}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
+        </div>
+      )}
 
-          <div
-            style={{
-              padding: 16,
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 12,
-            }}
-          >
-            <InfoCard
-              title="Valor por número"
-              value={formatCurrency(ticketPrice)}
-            />
-            <InfoCard
-              title="Data do sorteio"
-              value={drawDate ? formatDate(drawDate) : "Em breve"}
-            />
-          </div>
-        </section>
+      <div style={styles.topBar}>
+        <div style={styles.logoArea}>
+          {sorteio?.logoUrl ? (
+            <img src={sorteio.logoUrl} alt="Logo" style={styles.logoImg} />
+          ) : (
+            <div style={styles.logoFallback}>CASA PREMIADA</div>
+          )}
+        </div>
 
-        <div style={{ padding: "16px 14px 0" }}>
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: 24,
-              boxShadow: "0 8px 28px rgba(15,23,42,0.05)",
-              padding: 16,
-              marginTop: 14,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 18,
-                fontWeight: 800,
-                marginBottom: 6,
-              }}
-            >
-              Como funciona
+        <button style={styles.topAction} onClick={() => setMyNumbersOpen(true)}>
+          Ver meus números
+        </button>
+      </div>
+
+      <div style={styles.container}>
+        <div style={styles.heroCard}>
+          <img src={heroImage} alt={title} style={styles.heroImage} />
+
+          <div style={styles.blackInfoBar}>
+            <div style={styles.infoMiniBox}>
+              <div style={styles.infoLabel}>Valor por número</div>
+              <div style={styles.infoValue}>{formatCurrency(price)}</div>
             </div>
 
-            <div
-              style={{
-                fontSize: 14,
-                color: "#667085",
-                lineHeight: 1.6,
-              }}
-            >
-              Escolha seus números, informe seu nome e WhatsApp, reserve e
-              finalize com Pix. Simples, rápido e feito para celular.
+            <div style={styles.infoTitleBox}>
+              <div style={styles.infoLabel}>Prêmio</div>
+              <div style={styles.infoTitle}>{title}</div>
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 10,
-                marginTop: 14,
-              }}
-            >
-              <MiniStep number="1" text="Escolha seus números" />
-              <MiniStep number="2" text="Preencha seus dados" />
-              <MiniStep number="3" text="Pague via Pix" />
+            <div style={styles.infoMiniBox}>
+              <div style={styles.infoLabel}>Empresa</div>
+              <div style={styles.infoValue}>{companyName}</div>
             </div>
           </div>
         </div>
 
-        <div style={{ padding: "16px 14px 0" }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
-              gap: 10,
-            }}
-          >
-            <QuickSelectButton
-              label="+5"
-              onClick={() => selectRandomNumbers(5)}
-            />
-            <QuickSelectButton
-              label="+10"
-              onClick={() => selectRandomNumbers(10)}
-            />
-            <QuickSelectButton
-              label="+25"
-              onClick={() => selectRandomNumbers(25)}
-            />
-            <QuickSelectButton
-              label="+50"
-              onClick={() => selectRandomNumbers(50)}
-            />
-          </div>
-        </div>
+        <div style={styles.card}>
+          <div style={styles.mainTitle}>{title}</div>
+          <div style={styles.mainSubtitle}>Organizado por {companyName}</div>
 
-        <section ref={numbersSectionRef} style={{ padding: "16px 14px 0" }}>
-          <div
-            style={{
-              background: "#fff",
-              borderRadius: 24,
-              padding: 16,
-              boxShadow: "0 8px 28px rgba(15,23,42,0.05)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                marginBottom: 14,
-              }}
-            >
-              <div>
-                <div
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 800,
-                    color: "#101828",
-                  }}
-                >
-                  Escolha seus números
-                </div>
-                <div
-                  style={{
-                    fontSize: 13,
-                    color: "#667085",
-                    marginTop: 4,
-                  }}
-                >
-                  Toque para selecionar manualmente
-                </div>
-              </div>
-
-              {selectedNumbers.length > 0 && (
-                <button
-                  onClick={clearSelection}
-                  style={{
-                    border: "none",
-                    background: "#fff4f4",
-                    color: "#d92d20",
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Limpar
-                </button>
-              )}
+          <div style={styles.metaRow}>
+            <div style={styles.metaPill}>
+              Sorteio: {formatDate(sorteio?.drawDate)}
             </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(5, 1fr)",
-                gap: 10,
-              }}
-            >
-              {Array.from({ length: totalNumbers }, (_, index) => {
-                const num = index + 1;
-                const isUnavailable = unavailableNumbers.has(num);
-                const isSelected = selectedNumbers.includes(num);
-
-                return (
-                  <button
-                    key={num}
-                    onClick={() => toggleNumber(num)}
-                    disabled={isUnavailable}
-                    style={{
-                      border: isSelected
-                        ? "2px solid #16a34a"
-                        : isUnavailable
-                        ? "1px solid #e4e7ec"
-                        : "1px solid #d0d5dd",
-                      background: isSelected
-                        ? "linear-gradient(135deg, #1db954, #148143)"
-                        : isUnavailable
-                        ? "#f2f4f7"
-                        : "#ffffff",
-                      color: isSelected
-                        ? "#fff"
-                        : isUnavailable
-                        ? "#98a2b3"
-                        : "#101828",
-                      borderRadius: 16,
-                      height: 52,
-                      fontWeight: 800,
-                      fontSize: 14,
-                      cursor: isUnavailable ? "not-allowed" : "pointer",
-                      boxShadow: isSelected
-                        ? "0 10px 20px rgba(22,163,74,0.18)"
-                        : "none",
-                      transition: "all 0.2s ease",
-                    }}
-                  >
-                    {formatNumberLabel(num)}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div
-              style={{
-                marginTop: 14,
-                display: "flex",
-                gap: 10,
-                flexWrap: "wrap",
-                fontSize: 12,
-                color: "#667085",
-              }}
-            >
-              <Legend color="#ffffff" border="#d0d5dd" label="Disponível" />
-              <Legend color="#16a34a" border="#16a34a" label="Selecionado" textColor="#fff" />
-              <Legend color="#f2f4f7" border="#e4e7ec" label="Indisponível" />
+            <div style={styles.metaPill}>
+              Bilhetes por apenas {formatCurrency(price)}
             </div>
           </div>
-        </section>
 
-        {showBuyerPanel && (
-          <section style={{ padding: "16px 14px 0" }}>
-            <div
-              style={{
-                background: "#fff",
-                borderRadius: 24,
-                padding: 18,
-                boxShadow: "0 8px 28px rgba(15,23,42,0.05)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 20,
-                  fontWeight: 800,
-                  color: "#101828",
-                  marginBottom: 14,
-                }}
-              >
-                Seus dados
-              </div>
-
-              <div style={{ display: "grid", gap: 12 }}>
-                <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "#344054",
-                      marginBottom: 8,
-                    }}
-                  >
-                    Nome completo
-                  </label>
-                  <input
-                    type="text"
-                    value={customer.nome}
-                    onChange={(e) =>
-                      handleCustomerChange("nome", e.target.value)
-                    }
-                    placeholder="Digite seu nome completo"
-                    style={inputStyle}
-                  />
-                </div>
-
-                <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "#344054",
-                      marginBottom: 8,
-                    }}
-                  >
-                    WhatsApp
-                  </label>
-                  <input
-                    type="tel"
-                    value={formatWhatsapp(customer.whatsapp)}
-                    onChange={(e) =>
-                      handleCustomerChange("whatsapp", e.target.value)
-                    }
-                    placeholder="(00) 00000-0000"
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              <div
-                style={{
-                  marginTop: 16,
-                  padding: 14,
-                  borderRadius: 18,
-                  background: "#f8fafc",
-                  border: "1px solid #eaecf0",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 10,
-                    gap: 12,
-                  }}
-                >
-                  <span style={{ color: "#667085", fontSize: 14 }}>
-                    Quantidade
-                  </span>
-                  <strong style={{ color: "#101828" }}>
-                    {selectedNumbers.length} número(s)
-                  </strong>
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 10,
-                    gap: 12,
-                  }}
-                >
-                  <span style={{ color: "#667085", fontSize: 14 }}>
-                    Total
-                  </span>
-                  <strong
-                    style={{
-                      color: "#16a34a",
-                      fontSize: 18,
-                    }}
-                  >
-                    {formatCurrency(totalValue)}
-                  </strong>
-                </div>
-
-                <div>
-                  <div
-                    style={{
-                      color: "#667085",
-                      fontSize: 13,
-                      marginBottom: 8,
-                    }}
-                  >
-                    Números escolhidos
-                  </div>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {selectedNumbers.map((num) => (
-                      <div
-                        key={num}
-                        style={{
-                          background: "#e8f7ee",
-                          color: "#148143",
-                          fontWeight: 800,
-                          padding: "8px 10px",
-                          borderRadius: 12,
-                          fontSize: 13,
-                        }}
-                      >
-                        {formatNumberLabel(num)}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {erro && (
-                <div
-                  style={{
-                    marginTop: 14,
-                    background: "#fff3f2",
-                    color: "#b42318",
-                    padding: 12,
-                    borderRadius: 14,
-                    fontSize: 14,
-                    border: "1px solid #fecdca",
-                  }}
-                >
-                  {erro}
-                </div>
-              )}
-
-              {successMessage && (
-                <div
-                  style={{
-                    marginTop: 14,
-                    background: "#ecfdf3",
-                    color: "#027a48",
-                    padding: 12,
-                    borderRadius: 14,
-                    fontSize: 14,
-                    border: "1px solid #abefc6",
-                  }}
-                >
-                  {successMessage}
-                </div>
-              )}
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
-                  marginTop: 16,
-                }}
-              >
-                <button
-                  onClick={handleReserve}
-                  disabled={submittingReserve}
-                  style={{
-                    ...primaryButtonStyle,
-                    width: "100%",
-                    opacity: submittingReserve ? 0.75 : 1,
-                  }}
-                >
-                  {submittingReserve ? "Reservando..." : "Reservar"}
-                </button>
-
-                <button
-                  onClick={handlePixPayment}
-                  disabled={submittingPix}
-                  style={{
-                    ...secondaryGreenButtonStyle,
-                    width: "100%",
-                    opacity: submittingPix ? 0.75 : 1,
-                  }}
-                >
-                  {submittingPix ? "Gerando Pix..." : "Pagar"}
-                </button>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {pixData && (
-          <section id="pix-box" style={{ padding: "16px 14px 0" }}>
-            <div
-              style={{
-                background: "#fff",
-                borderRadius: 24,
-                padding: 18,
-                boxShadow: "0 8px 28px rgba(15,23,42,0.05)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 21,
-                  fontWeight: 800,
-                  color: "#101828",
-                  marginBottom: 6,
-                }}
-              >
-                Pagamento Pix
-              </div>
-
-              <div
-                style={{
-                  color: "#667085",
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                  marginBottom: 16,
-                }}
-              >
-                Faça o pagamento para confirmar seus números. Assim que o Pix
-                for identificado, sua participação fica concluída.
-              </div>
-
-              {pixData?.qrCodeBase64 || pixData?.qrCode ? (
-                <div
-                  style={{
-                    background: "#f8fafc",
-                    border: "1px solid #eaecf0",
-                    borderRadius: 20,
-                    padding: 18,
-                    display: "flex",
-                    justifyContent: "center",
-                    marginBottom: 16,
-                  }}
-                >
-                  <img
-                    src={
-                      pixData?.qrCodeBase64?.startsWith("data:image")
-                        ? pixData.qrCodeBase64
-                        : pixData?.qrCodeBase64
-                        ? `data:image/png;base64,${pixData.qrCodeBase64}`
-                        : pixData?.qrCode || ""
-                    }
-                    alt="QR Code Pix"
-                    style={{
-                      width: "100%",
-                      maxWidth: 260,
-                      borderRadius: 18,
-                      background: "#fff",
-                    }}
-                  />
-                </div>
-              ) : null}
-
-              {(pixData?.pixCopiaECola ||
-                pixData?.pixCode ||
-                pixData?.copiaecola) && (
-                <>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: "#344054",
-                      marginBottom: 8,
-                    }}
-                  >
-                    Pix copia e cola
-                  </div>
-
-                  <div
-                    style={{
-                      background: "#f8fafc",
-                      border: "1px solid #eaecf0",
-                      borderRadius: 16,
-                      padding: 14,
-                      fontSize: 13,
-                      lineHeight: 1.5,
-                      color: "#475467",
-                      wordBreak: "break-all",
-                    }}
-                  >
-                    {pixData?.pixCopiaECola ||
-                      pixData?.pixCode ||
-                      pixData?.copiaecola}
-                  </div>
-
-                  <button
-                    onClick={copyPixCode}
-                    style={{
-                      ...primaryButtonStyle,
-                      width: "100%",
-                      marginTop: 12,
-                    }}
-                  >
-                    {copiedPix ? "Código copiado" : "Copiar código Pix"}
-                  </button>
-                </>
-              )}
-
-              {(pixData?.expirationDate ||
-                pixData?.expiresAt ||
-                pixData?.expiracao) && (
-                <div
-                  style={{
-                    marginTop: 14,
-                    fontSize: 13,
-                    color: "#667085",
-                  }}
-                >
-                  Válido até:{" "}
-                  <strong style={{ color: "#101828" }}>
-                    {formatDate(
-                      pixData?.expirationDate ||
-                        pixData?.expiresAt ||
-                        pixData?.expiracao
-                    )}
-                  </strong>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
-        <section style={{ padding: "16px 14px 30px" }}>
-          <div
-            style={{
-              display: "grid",
-              gap: 12,
-            }}
-          >
-            {whatsappLink && (
+          <div style={styles.shareTitle}>Compartilhar sorteio</div>
+          <div style={styles.shareRow}>
+            {whatsappLink ? (
               <a
                 href={whatsappLink}
                 target="_blank"
                 rel="noreferrer"
-                style={{
-                  ...whatsappButtonStyle,
-                  textDecoration: "none",
-                  textAlign: "center",
-                }}
+                style={styles.whatsappBtn}
               >
-                Falar no WhatsApp
+                WhatsApp
               </a>
-            )}
+            ) : null}
 
             <button
-              onClick={sharePage}
-              style={{
-                background: "#fff",
-                color: "#101828",
-                border: "1px solid #d0d5dd",
-                borderRadius: 18,
-                height: 54,
-                fontSize: 16,
-                fontWeight: 800,
-                cursor: "pointer",
-                boxShadow: "0 8px 24px rgba(15,23,42,0.04)",
+              style={styles.copyBtn}
+              onClick={async () => {
+                await navigator.clipboard.writeText(window.location.href);
               }}
             >
-              Compartilhar sorteio
-            </button>
-          </div>
-        </section>
-      </div>
-
-      {selectedNumbers.length === 0 && (
-        <div
-          style={{
-            position: "fixed",
-            left: 14,
-            right: 14,
-            bottom: 16,
-            zIndex: 1000,
-            maxWidth: 560,
-            margin: "0 auto",
-          }}
-        >
-          <div
-            style={{
-              margin: "0 auto",
-              maxWidth: 560,
-            }}
-          >
-            <button
-              onClick={scrollToNumbers}
-              style={{
-                width: "100%",
-                height: 60,
-                border: "none",
-                borderRadius: 20,
-                background: "linear-gradient(135deg, #1db954, #148143)",
-                color: "#fff",
-                fontSize: 17,
-                fontWeight: 800,
-                cursor: "pointer",
-                boxShadow: "0 18px 35px rgba(22,163,74,0.30)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 10,
-              }}
-            >
-              Escolher números
-              <span style={{ fontSize: 22, lineHeight: 1 }}>↓</span>
+              Copiar Link
             </button>
           </div>
         </div>
-      )}
 
-      {selectedNumbers.length > 0 && (
-        <div
-          style={{
-            position: "fixed",
-            left: 14,
-            right: 14,
-            bottom: 16,
-            zIndex: 1000,
-            maxWidth: 560,
-            margin: "0 auto",
-          }}
-        >
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: 22,
-              boxShadow: "0 18px 40px rgba(15,23,42,0.12)",
-              border: "1px solid #eaecf0",
-              padding: 12,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div
+        {description ? (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Descrição do prêmio</div>
+            <div style={styles.description}>{description}</div>
+          </div>
+        ) : null}
+
+        <div ref={numbersRef} style={styles.sectionHeadline}>
+          Clique e escolha seu número da sorte
+        </div>
+
+        <div style={styles.quickCard}>
+          <div style={styles.quickHeadline}>
+            COMPRA RÁPIDA - escolha aleatória dos números
+          </div>
+
+          <div style={styles.quickGrid}>
+            <button style={styles.quickBtn} onClick={() => pickRandom(2)}>
+              +2
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(5)}>
+              +5
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(10)}>
+              +10
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(15)}>
+              +15
+            </button>
+            <button style={styles.quickBtn} onClick={() => pickRandom(20)}>
+              +20
+            </button>
+          </div>
+        </div>
+
+        {selectedNumbers.length > 0 ? (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Números selecionados</div>
+            <div style={styles.selectedWrap}>
+              {selectedNumbers.map((n) => (
+                <span key={n} style={styles.selectedChip}>
+                  {formatNumberLabel(n)}
+                </span>
+              ))}
+            </div>
+            <div style={styles.selectedSummary}>
+              {selectedNumbers.length} número(s) • {formatCurrency(totalValue)}
+            </div>
+          </div>
+        ) : null}
+
+        <div style={styles.numberGrid}>
+          {Array.from({ length: totalNumbers }, (_, index) => {
+            const num = index + 1;
+            const isUnavailable = unavailableNumbers.has(num);
+            const isSelected = selectedNumbers.includes(num);
+
+            return (
+              <button
+                key={num}
+                onClick={() => toggleNumber(num)}
+                disabled={isUnavailable}
                 style={{
-                  fontSize: 12,
-                  color: "#667085",
-                  marginBottom: 4,
+                  ...styles.numberBtn,
+                  ...(isUnavailable ? styles.numberUnavailable : {}),
+                  ...(isSelected ? styles.numberActive : {}),
                 }}
               >
-                Selecionados
+                {String(num).padStart(3, "0")}
+              </button>
+            );
+          })}
+        </div>
+
+        {showCheckout ? (
+          <div ref={checkoutRef} style={styles.card}>
+            <div style={styles.sectionTitle}>Pagar agora</div>
+            <div style={styles.helpText}>
+              Sua reserva será mantida por 10 minutos para pagamento.
+            </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Nome</label>
+              <input
+                style={styles.input}
+                value={customer.nome}
+                onChange={(e) => handleCustomerChange("nome", e.target.value)}
+                placeholder="Digite seu nome"
+              />
+            </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Celular</label>
+              <input
+                style={styles.input}
+                value={formatPhone(customer.whatsapp)}
+                onChange={(e) =>
+                  handleCustomerChange("whatsapp", e.target.value)
+                }
+                placeholder="(00) 00000-0000"
+              />
+            </div>
+
+            <div style={styles.resumeBox}>
+              <div>
+                <strong>Números:</strong>{" "}
+                {selectedNumbers.map((n) => formatNumberLabel(n)).join(", ")}
               </div>
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 800,
-                  color: "#101828",
-                }}
-              >
-                {selectedNumbers.length} número(s)
-              </div>
-              <div
-                style={{
-                  fontSize: 14,
-                  color: "#16a34a",
-                  fontWeight: 800,
-                }}
-              >
-                {formatCurrency(totalValue)}
+              <div style={{ marginTop: 8 }}>
+                <strong>Total:</strong> {formatCurrency(totalValue)}
               </div>
             </div>
 
+            {erro ? <div style={styles.errorBox}>{erro}</div> : null}
+
             <button
-              onClick={() => {
-                setShowBuyerPanel(true);
-                setTimeout(() => {
-                  window.scrollBy({
-                    top: 300,
-                    behavior: "smooth",
-                  });
-                }, 80);
-              }}
-              style={{
-                ...primaryButtonStyle,
-                minWidth: 160,
-                padding: "0 18px",
-              }}
+              style={styles.payBtn}
+              onClick={handlePix}
+              disabled={submittingPix}
             >
-              Ver informações
+              {submittingPix ? "Gerando pagamento..." : "Pagar"}
             </button>
           </div>
+        ) : null}
+
+        {pixData ? (
+          <div id="pix-box" style={styles.card}>
+            <div style={styles.orangeTitle}>Aguardando o pagamento!</div>
+            <div style={styles.helpText}>Finalize o pagamento</div>
+
+            <div style={styles.infoCard}>
+              <div style={styles.sectionTitle}>Veja o passo a passo</div>
+              <ol style={styles.stepList}>
+                <li>Copie a chave PIX.</li>
+                <li>Abra o aplicativo do seu banco e escolha PIX.</li>
+                <li>Faça o pagamento e envie o comprovante no WhatsApp.</li>
+              </ol>
+
+              {pixData?.qrCodeBase64 ? (
+                <div style={{ textAlign: "center", marginBottom: 16 }}>
+                  <img
+                    src={
+                      pixData.qrCodeBase64.startsWith("data:image")
+                        ? pixData.qrCodeBase64
+                        : `data:image/png;base64,${pixData.qrCodeBase64}`
+                    }
+                    alt="QR Code PIX"
+                    style={styles.qrImage}
+                  />
+                </div>
+              ) : null}
+
+              <div style={styles.pixHeading}>Dados do PIX</div>
+
+              <div style={styles.pixRow}>
+                <span>Nome</span>
+                <strong>CASA PREMIADA</strong>
+              </div>
+
+              <div style={styles.pixRow}>
+                <span>Valor total</span>
+                <strong>{formatCurrency(totalValue)}</strong>
+              </div>
+
+              <div style={styles.field}>
+                <label style={styles.label}>Chave PIX</label>
+                <div style={styles.copyRow}>
+                  <input
+                    readOnly
+                    style={{ ...styles.input, marginBottom: 0 }}
+                    value={
+                      pixData?.pixCopiaECola ||
+                      pixData?.pixCode ||
+                      pixData?.copiaecola ||
+                      ""
+                    }
+                  />
+                  <button style={styles.copyMiniBtn} onClick={copyPixCode}>
+                    {copiedPix ? "Copiado" : "Copiar"}
+                  </button>
+                </div>
+              </div>
+
+              {whatsappLink ? (
+                <a
+                  href={whatsappLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.sendBtn}
+                >
+                  Enviar comprovante
+                </a>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {selectedNumbers.length === 0 ? (
+        <div style={styles.floatingWrap}>
+          <button style={styles.floatingBtn} onClick={scrollToNumbers}>
+            Escolher números
+          </button>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
-function InfoCard({ title, value }) {
-  return (
-    <div
-      style={{
-        background: "#f8fafc",
-        border: "1px solid #eaecf0",
-        borderRadius: 18,
-        padding: 14,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 12,
-          color: "#667085",
-          marginBottom: 6,
-          fontWeight: 700,
-        }}
-      >
-        {title}
-      </div>
-      <div
-        style={{
-          fontSize: 17,
-          fontWeight: 800,
-          color: "#101828",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function MiniStep({ number, text }) {
-  return (
-    <div
-      style={{
-        background: "#f8fafc",
-        border: "1px solid #eaecf0",
-        borderRadius: 18,
-        padding: 12,
-        textAlign: "center",
-      }}
-    >
-      <div
-        style={{
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          background: "#16a34a",
-          color: "#fff",
-          fontWeight: 800,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          margin: "0 auto 8px",
-          fontSize: 13,
-        }}
-      >
-        {number}
-      </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "#475467",
-          fontWeight: 700,
-          lineHeight: 1.4,
-        }}
-      >
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function QuickSelectButton({ label, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        height: 50,
-        borderRadius: 18,
-        border: "1px solid #d0d5dd",
-        background: "#fff",
-        color: "#101828",
-        fontWeight: 800,
-        fontSize: 15,
-        cursor: "pointer",
-        boxShadow: "0 8px 18px rgba(15,23,42,0.04)",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
-function Legend({ color, border, label, textColor }) {
-  return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-      }}
-    >
-      <span
-        style={{
-          width: 16,
-          height: 16,
-          borderRadius: 6,
-          background: color,
-          border: `1px solid ${border}`,
-          display: "inline-block",
-        }}
-      />
-      <span style={{ color: textColor || "#667085" }}>{label}</span>
-    </div>
-  );
-}
-
-const inputStyle = {
-  width: "100%",
-  height: 54,
-  borderRadius: 16,
-  border: "1px solid #d0d5dd",
-  outline: "none",
-  padding: "0 16px",
-  fontSize: 15,
-  background: "#fff",
-  color: "#101828",
-};
-
-const primaryButtonStyle = {
-  height: 54,
-  border: "none",
-  borderRadius: 18,
-  background: "linear-gradient(135deg, #1db954, #148143)",
-  color: "#fff",
-  fontSize: 16,
-  fontWeight: 800,
-  cursor: "pointer",
-  boxShadow: "0 12px 24px rgba(22,163,74,0.22)",
-};
-
-const secondaryGreenButtonStyle = {
-  height: 54,
-  border: "1px solid #bbf7d0",
-  borderRadius: 18,
-  background: "#ecfdf3",
-  color: "#067647",
-  fontSize: 16,
-  fontWeight: 800,
-  cursor: "pointer",
-};
-
-const whatsappButtonStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  height: 54,
-  border: "none",
-  borderRadius: 18,
-  background: "#25D366",
-  color: "#fff",
-  fontSize: 16,
-  fontWeight: 800,
-  cursor: "pointer",
-  boxShadow: "0 12px 24px rgba(37, 211, 102, 0.22)",
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background: "#eef2ef",
+    paddingBottom: 100,
+    fontFamily: "Arial, sans-serif",
+  },
+  centerWrap: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    background: "#eef2ef",
+  },
+  loadingCard: {
+    background: "#fff",
+    borderRadius: 24,
+    padding: 24,
+    textAlign: "center",
+    boxShadow: "0 10px 24px rgba(0,0,0,0.08)",
+  },
+  loadingDot: {
+    width: 42,
+    height: 42,
+    borderRadius: 99,
+    background: "#10b981",
+    margin: "0 auto 12px",
+  },
+  topBar: {
+    position: "sticky",
+    top: 0,
+    zIndex: 20,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "12px 14px",
+    background: "#ffffffeb",
+    backdropFilter: "blur(8px)",
+    borderBottom: "1px solid #e5e7eb",
+  },
+  logoArea: {
+    minHeight: 52,
+    display: "flex",
+    alignItems: "center",
+  },
+  logoImg: {
+    height: 48,
+    objectFit: "contain",
+  },
+  logoFallback: {
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+  },
+  topAction: {
+    border: "none",
+    background: "#15803d",
+    color: "#fff",
+    padding: "12px 16px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+  },
+  container: {
+    maxWidth: 620,
+    margin: "0 auto",
+    padding: 14,
+  },
+  heroCard: {
+    overflow: "hidden",
+    borderRadius: 26,
+    background: "#fff",
+    boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
+    marginBottom: 16,
+  },
+  heroImage: {
+    width: "100%",
+    minHeight: 360,
+    maxHeight: 620,
+    display: "block",
+    objectFit: "cover",
+    background: "#ddd",
+  },
+  blackInfoBar: {
+    background: "#111111",
+    color: "#fff",
+    padding: 16,
+    display: "grid",
+    gridTemplateColumns: "1fr 1.2fr 1fr",
+    gap: 10,
+  },
+  infoMiniBox: {},
+  infoTitleBox: {},
+  infoLabel: {
+    fontSize: 12,
+    color: "#bdbdbd",
+    textTransform: "uppercase",
+    marginBottom: 8,
+  },
+  infoValue: {
+    fontSize: 18,
+    fontWeight: 800,
+    lineHeight: 1.25,
+  },
+  infoTitle: {
+    fontSize: 22,
+    fontWeight: 900,
+    lineHeight: 1.15,
+  },
+  card: {
+    background: "#fff",
+    borderRadius: 24,
+    padding: 18,
+    boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
+    marginBottom: 16,
+  },
+  mainTitle: {
+    fontSize: 30,
+    fontWeight: 900,
+    lineHeight: 1.05,
+    color: "#111827",
+  },
+  mainSubtitle: {
+    marginTop: 6,
+    fontSize: 17,
+    color: "#475467",
+  },
+  metaRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 18,
+  },
+  metaPill: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: "12px 14px",
+    textAlign: "center",
+    fontWeight: 800,
+  },
+  shareTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    marginBottom: 12,
+  },
+  shareRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+  },
+  whatsappBtn: {
+    textDecoration: "none",
+    background: "#22c55e",
+    color: "#fff",
+    padding: "16px 18px",
+    textAlign: "center",
+    borderRadius: 18,
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  copyBtn: {
+    background: "#fff",
+    color: "#111827",
+    border: "1px solid #d0d5dd",
+    borderRadius: 18,
+    padding: "16px 18px",
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: 900,
+    marginBottom: 10,
+  },
+  description: {
+    fontSize: 18,
+    lineHeight: 1.55,
+    color: "#344054",
+  },
+  sectionHeadline: {
+    margin: "24px 0 14px",
+    fontSize: 24,
+    fontWeight: 900,
+    lineHeight: 1.15,
+    color: "#111827",
+  },
+  quickCard: {
+    background: "#fffef6",
+    border: "2px solid #f4d36f",
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 16,
+  },
+  quickHeadline: {
+    fontSize: 24,
+    fontWeight: 900,
+    lineHeight: 1.2,
+    marginBottom: 14,
+    color: "#111827",
+  },
+  quickGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, 1fr)",
+    gap: 10,
+  },
+  quickBtn: {
+    minHeight: 54,
+    border: "none",
+    borderRadius: 14,
+    background: "#f6c948",
+    color: "#111827",
+    fontWeight: 900,
+    fontSize: 20,
+  },
+  selectedWrap: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  selectedChip: {
+    background: "#e8f7ee",
+    color: "#087443",
+    borderRadius: 999,
+    padding: "10px 12px",
+    fontWeight: 900,
+  },
+  selectedSummary: {
+    marginTop: 12,
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  numberGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 12,
+  },
+  numberBtn: {
+    minHeight: 76,
+    borderRadius: 18,
+    border: "2px solid #d0d5dd",
+    background: "#fff",
+    color: "#111827",
+    fontSize: 24,
+    fontWeight: 900,
+    boxShadow: "0 8px 18px rgba(15,23,42,0.05)",
+  },
+  numberUnavailable: {
+    background: "#edf1f5",
+    color: "#98a2b3",
+    border: "2px solid #e4e7ec",
+  },
+  numberActive: {
+    background: "linear-gradient(135deg, #10b981, #0f8f4c)",
+    color: "#fff",
+    border: "2px solid #0f8f4c",
+    boxShadow: "0 12px 22px rgba(16,185,129,0.24)",
+  },
+  helpText: {
+    color: "#667085",
+    fontSize: 15,
+    lineHeight: 1.5,
+    marginBottom: 14,
+  },
+  field: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginBottom: 12,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#344054",
+  },
+  input: {
+    width: "100%",
+    minHeight: 52,
+    border: "1px solid #d0d5dd",
+    borderRadius: 14,
+    padding: "0 14px",
+    fontSize: 16,
+    background: "#fff",
+  },
+  resumeBox: {
+    background: "#f8fafc",
+    border: "1px solid #eaecf0",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    lineHeight: 1.6,
+  },
+  errorBox: {
+    background: "#fef3f2",
+    color: "#b42318",
+    border: "1px solid #fecdca",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+  },
+  payBtn: {
+    width: "100%",
+    minHeight: 56,
+    border: "none",
+    borderRadius: 16,
+    background: "#15803d",
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: 900,
+  },
+  orangeTitle: {
+    fontSize: 28,
+    fontWeight: 900,
+    color: "#d97706",
+    marginBottom: 6,
+  },
+  infoCard: {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 18,
+    padding: 16,
+  },
+  stepList: {
+    paddingLeft: 18,
+    lineHeight: 1.7,
+    color: "#344054",
+    fontSize: 18,
+    marginTop: 0,
+  },
+  qrImage: {
+    width: "100%",
+    maxWidth: 240,
+    borderRadius: 16,
+  },
+  pixHeading: {
+    fontSize: 22,
+    fontWeight: 900,
+    margin: "6px 0 14px",
+  },
+  pixRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    marginBottom: 12,
+    fontSize: 18,
+  },
+  copyRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: 8,
+    alignItems: "center",
+  },
+  copyMiniBtn: {
+    minHeight: 52,
+    border: "none",
+    borderRadius: 14,
+    background: "#f4d36f",
+    padding: "0 16px",
+    fontWeight: 900,
+  },
+  sendBtn: {
+    display: "block",
+    textAlign: "center",
+    textDecoration: "none",
+    background: "#15803d",
+    color: "#fff",
+    borderRadius: 14,
+    padding: "16px",
+    fontSize: 18,
+    fontWeight: 900,
+    marginTop: 12,
+  },
+  floatingWrap: {
+    position: "fixed",
+    left: 14,
+    right: 14,
+    bottom: 16,
+    zIndex: 30,
+  },
+  floatingBtn: {
+    width: "100%",
+    minHeight: 58,
+    border: "none",
+    borderRadius: 18,
+    background: "linear-gradient(135deg, #10b981, #0f8f4c)",
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: 900,
+    boxShadow: "0 14px 24px rgba(16,185,129,0.28)",
+  },
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 100,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 520,
+    background: "#fff",
+    borderRadius: 22,
+    padding: 18,
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  closeBtn: {
+    border: "none",
+    background: "transparent",
+    fontSize: 36,
+    lineHeight: 1,
+    color: "#667085",
+  },
+  greenWideButton: {
+    width: "100%",
+    minHeight: 56,
+    border: "none",
+    borderRadius: 16,
+    background: "#15803d",
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  resultBox: {
+    background: "#f8fafc",
+    border: "1px solid #e5e7eb",
+    borderRadius: 16,
+    padding: 14,
+  },
 };
