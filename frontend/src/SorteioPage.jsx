@@ -51,6 +51,7 @@ export default function SorteioPage() {
   const [selectedNumbers, setSelectedNumbers] = useState([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
+  const [hideFloatingCtas, setHideFloatingCtas] = useState(false);
 
   const [customer, setCustomer] = useState({
     nome: "",
@@ -67,6 +68,7 @@ export default function SorteioPage() {
   const [myNumbersResult, setMyNumbersResult] = useState(null);
 
   const numbersRef = useRef(null);
+  const quickCardRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -87,6 +89,24 @@ export default function SorteioPage() {
     if (!slug) return;
     loadSorteio();
   }, [slug]);
+
+
+  useEffect(() => {
+    const target = quickCardRef.current;
+    if (!target) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setHideFloatingCtas(entry.isIntersecting);
+      },
+      {
+        threshold: 0.2,
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [sorteio]);
 
   async function safeJson(res) {
     const text = await res.text();
@@ -142,7 +162,7 @@ export default function SorteioPage() {
 
   const totalValue = selectedNumbers.length * price;
 
-  const whatsappDigits = onlyDigits(sorteio?.whatsapp || "");
+  const whatsappDigits = "5516993537516";
   const whatsappLink = whatsappDigits ? `https://wa.me/${whatsappDigits}` : "";
 
   function formatNumberLabel(num) {
@@ -531,7 +551,7 @@ export default function SorteioPage() {
         </div>
       )}
 
-      {contactOpen && (
+      {contactOpen && !hideFloatingCtas && (
         <div style={styles.contactWrap}>
           <div style={styles.contactBox}>
             {whatsappLink ? (
@@ -645,7 +665,7 @@ export default function SorteioPage() {
           </div>
         </div>
 
-        <div style={styles.quickCard}>
+        <div ref={quickCardRef} style={styles.quickCard}>
           <div style={styles.quickTopLine}>
             <span style={styles.quickIcon}>⚡</span>
             <div>
@@ -730,21 +750,23 @@ export default function SorteioPage() {
             </button>
           </div>
         </div>
-      ) : (
+      ) : !hideFloatingCtas ? (
         <div style={styles.floatingWrap}>
           <button style={styles.floatingBtn} onClick={scrollToNumbers}>
             <span>✨ Escolher números</span>
             <span style={styles.floatingArrows}>↓ ↓ ↓</span>
           </button>
         </div>
-      )}
+      ) : null}
 
-      <button
-        style={styles.whatsappFloat}
-        onClick={() => setContactOpen((prev) => !prev)}
-      >
-        💬
-      </button>
+      {!hideFloatingCtas ? (
+        <button
+          style={styles.whatsappFloat}
+          onClick={() => setContactOpen((prev) => !prev)}
+        >
+          💬
+        </button>
+      ) : null}
     </div>
   );
 }
