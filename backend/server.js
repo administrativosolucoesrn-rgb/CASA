@@ -318,14 +318,15 @@ function getUnavailableNumbersForSorteio(sorteioId, db, ignoreReservaId = null) 
   cleanupExpiredReservations(db);
 
   const reserved = db.reservas
-    .filter(
-      (r) =>
-        r.sorteioId === sorteioId &&
-        r.status === "reservado" &&
-        !isExpired(r.expiresAt) &&
-        (ignoreReservaId ? r.id !== ignoreReservaId : true)
-    )
-    .flatMap((r) => r.numeros);
+  .filter(
+    (r) =>
+      r.sorteioId === sorteioId &&
+      r.status === "reservado" &&
+      !r.bloco && // 🔥 IGNORA BLOCOS
+      !isExpired(r.expiresAt) &&
+      (ignoreReservaId ? r.id !== ignoreReservaId : true)
+  )
+  .flatMap((r) => r.numeros);
 
   const paid = db.pagamentos
     .filter((p) => p.sorteioId === sorteioId && p.status === "pago")
@@ -744,8 +745,40 @@ app.post(
       };
 
       db.sorteios.push(sorteio);
-      await writeDb(db);
 
+// ===== CRIAR BLOCOS AUTOMÁTICOS =====
+const criarBloco = (inicio, fim, origem, nomeBloco) => {
+  const numeros = [];
+  for (let i = inicio; i <= fim; i += 1) {
+    numeros.push(i);
+  }
+
+  db.reservas.push({
+  id: generateId("res"),
+  sorteioId: sorteio.id,
+  clienteId: null,
+  nome: nomeBloco,
+  whatsapp: "",
+  numeros,
+  numerosTexto: `${inicio}-${fim}`,
+  total: 0,
+  valorNumero: sorteio.price,
+  status: "reservado",
+  origem,
+  bloco: true,
+  observacao: "BLOCO AUTOMÁTICO",
+  expiresAt: addMinutes(new Date(), 60 * 24 * 365).toISOString(),
+  createdAt: nowIso(),
+  updatedAt: nowIso(),
+});
+
+// SITE = 1 até 150 fica livre
+
+criarBloco(151, 300, "mae", "Vendas externas mãe");
+criarBloco(301, 450, "pai", "Vendas externas pai");
+criarBloco(451, 550, "vo", "Vendas externas vó");
+
+await writeDb(db)
       res.status(201).json({
         success: true,
         sorteio: getSorteioDisplay(sorteio, db),
