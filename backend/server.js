@@ -1,4 +1,9 @@
+const PAGARME_SECRET_KEY = process.env.PAGARME_SECRET_KEY || "";
+const PAGARME_API_URL = "https://api.pagar.me/core/v5";
 
+function pagarmeBasicAuth() {
+  return "Basic " + Buffer.from(`${PAGARME_SECRET_KEY}:`).toString("base64");
+}
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
