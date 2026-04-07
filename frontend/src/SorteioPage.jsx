@@ -4,8 +4,6 @@ import axios from "axios";
 const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
 
-const PIX_RECEBEDOR = "46.573.111 RAILANNY SILVA";
-
 function onlyDigits(value = "") {
   return String(value).replace(/\D/g, "");
 }
@@ -186,7 +184,12 @@ export default function SorteioPage() {
 
       setPixData(res.data);
       setPaymentOpen(true);
-      setTimeLeft(Number(res.data?.expiresInSeconds || 15 * 60));
+
+      if (res.data?.expiresInSeconds) {
+        setTimeLeft(Number(res.data.expiresInSeconds));
+      } else {
+        setTimeLeft(15 * 60);
+      }
 
       await loadSorteio();
     } catch (e) {
@@ -211,7 +214,9 @@ export default function SorteioPage() {
   if (!sorteio) {
     return (
       <div style={styles.loadingWrap}>
-        <div style={styles.loadingCard}>{erro || "Carregando sorteio..."}</div>
+        <div style={styles.loadingCard}>
+          {erro || "Carregando sorteio..."}
+        </div>
       </div>
     );
   }
@@ -245,7 +250,9 @@ export default function SorteioPage() {
             )}
           </div>
 
-          <button style={styles.myNumbersBtn}>👁️🔎 Meus números</button>
+          <button style={styles.myNumbersBtn}>
+            👁️🔎 Meus números
+          </button>
         </div>
 
         <div style={styles.heroCard}>
@@ -395,10 +402,10 @@ export default function SorteioPage() {
               </div>
               <div style={styles.statusText}>
                 {paymentStatus === "paid"
-                  ? "Seu pagamento foi confirmado automaticamente com sucesso."
+                  ? "Seu pagamento foi confirmado com sucesso."
                   : paymentStatus === "expired"
                   ? "O tempo terminou. Gere um novo PIX para continuar."
-                  : "Finalize agora pelo PIX automático para garantir seus números."}
+                  : "Finalize agora pelo PIX automático para garantir seus números antes que o tempo acabe."}
               </div>
             </div>
 
@@ -425,20 +432,20 @@ export default function SorteioPage() {
                   </div>
 
                   <div style={styles.timerBox}>
-                    <span style={styles.timerLabel}>Tempo restante</span>
+                    <span style={styles.timerLabel}>Reserve seus números por</span>
                     <span style={styles.timerValue}>{formatTimer(timeLeft)}</span>
                   </div>
-
-                  <div style={styles.autoBadge}>⚡ Aprovação automática após o pagamento</div>
                 </div>
 
                 <div style={styles.detailCard}>
-                  <div style={styles.receiverCard}>
-                    <div style={styles.receiverLabel}>Recebedor</div>
-                    <div style={styles.receiverName}>{PIX_RECEBEDOR}</div>
-                    <div style={styles.receiverHint}>Confira o nome antes de concluir o pagamento.</div>
+                  <div style={styles.rowInfo}>
+                    <span>Recebedor</span>
+                    <strong>46.573.111 RAILANNY SILVA</strong>
                   </div>
-
+                  <div style={styles.rowInfo}>
+                    <span>Tipo de pagamento</span>
+                    <strong>PIX automático</strong>
+                  </div>
                   <div style={styles.rowInfo}>
                     <span>Valor total</span>
                     <strong>{formatMoney(total)}</strong>
@@ -446,10 +453,6 @@ export default function SorteioPage() {
                   <div style={styles.rowInfo}>
                     <span>Números</span>
                     <strong>{selectedNumbers.length}</strong>
-                  </div>
-                  <div style={styles.rowInfo}>
-                    <span>Status</span>
-                    <strong style={{ color: "#15803d" }}>PIX automático</strong>
                   </div>
 
                   <div style={styles.fieldWrap}>
@@ -467,7 +470,7 @@ export default function SorteioPage() {
                   </div>
 
                   <div style={styles.noticeBox}>
-                    Assim que o pagamento for identificado, seus números serão confirmados sem atendimento manual.
+                    Este é um PIX automático. Após o pagamento, a confirmação acontece automaticamente em poucos segundos.
                   </div>
 
                   {paymentStatus === "expired" && (
@@ -880,7 +883,6 @@ const styles = {
     borderRadius: 18,
     background: "#fff",
     border: "1px solid #e5e7eb",
-    marginBottom: 12,
   },
   timerLabel: {
     color: "#667085",
@@ -893,46 +895,11 @@ const styles = {
     fontSize: 26,
     letterSpacing: 1,
   },
-  autoBadge: {
-    background: "#ecfdf3",
-    color: "#166534",
-    border: "1px solid #86efac",
-    borderRadius: 16,
-    padding: "12px 14px",
-    fontWeight: 700,
-    fontSize: 14,
-    textAlign: "center",
-  },
   detailCard: {
     background: "#fff",
     border: "1px solid #e5e7eb",
     borderRadius: 24,
     padding: 18,
-  },
-  receiverCard: {
-    background: "#fff8dc",
-    border: "1px solid #f4d36f",
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 14,
-  },
-  receiverLabel: {
-    color: "#8b6b00",
-    fontSize: 12,
-    fontWeight: 800,
-    textTransform: "uppercase",
-    marginBottom: 6,
-  },
-  receiverName: {
-    color: "#111827",
-    fontSize: 20,
-    fontWeight: 800,
-    lineHeight: 1.3,
-  },
-  receiverHint: {
-    color: "#6b7280",
-    fontSize: 13,
-    marginTop: 6,
   },
   rowInfo: {
     display: "flex",
