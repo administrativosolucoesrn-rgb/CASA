@@ -34,8 +34,14 @@ const RESERVATION_EXPIRES_MINUTES = Number(
   process.env.RESERVATION_EXPIRES_MINUTES || 15
 );
 
-const DATA_DIR = path.join(__dirname, "data");
-const UPLOADS_DIR = path.join(__dirname, "uploads");
+const STORAGE_ROOT = process.env.STORAGE_ROOT
+  ? path.resolve(process.env.STORAGE_ROOT)
+  : process.env.RENDER
+  ? "/var/data/casapremiada"
+  : __dirname;
+
+const DATA_DIR = path.join(STORAGE_ROOT, "data");
+const UPLOADS_DIR = path.join(STORAGE_ROOT, "uploads");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
 /**
@@ -58,6 +64,9 @@ app.use("/uploads", express.static(UPLOADS_DIR));
  * =========================================================
  */
 ensureFoldersAndDb();
+console.log("STORAGE_ROOT:", STORAGE_ROOT);
+console.log("DB_FILE:", DB_FILE);
+console.log("UPLOADS_DIR:", UPLOADS_DIR);
 
 /**
  * =========================================================
