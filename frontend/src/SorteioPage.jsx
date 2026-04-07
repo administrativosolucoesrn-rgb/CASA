@@ -432,7 +432,7 @@ export default function SorteioPage() {
                   </div>
 
                   <div style={styles.timerBox}>
-                    <span style={styles.timerLabel}>Reserve seus números por</span>
+                    <span style={styles.timerLabel}>RESERVA EXPIRA EM</span>
                     <span style={styles.timerValue}>{formatTimer(timeLeft)}</span>
                   </div>
                 </div>
