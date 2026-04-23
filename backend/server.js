@@ -1,10 +1,12 @@
+*/
+
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
-const fsp = require("fs/promises");
 const path = require("path");
 const multer = require("multer");
 const QRCode = require("qrcode");
+const Database = require("better-sqlite3");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -36,13 +38,13 @@ const RESERVATION_EXPIRES_MINUTES = Number(
 
 const STORAGE_ROOT = process.env.STORAGE_ROOT
   ? path.resolve(process.env.STORAGE_ROOT)
-  : process.env.RENDER
-  ? "/var/data/casapremiada"
+  : process.env.RENDER_DISK_MOUNT_PATH
+  ? path.resolve(process.env.RENDER_DISK_MOUNT_PATH)
   : __dirname;
 
 const DATA_DIR = path.join(STORAGE_ROOT, "data");
 const UPLOADS_DIR = path.join(STORAGE_ROOT, "uploads");
-const DB_FILE = path.join(DATA_DIR, "db.json");
+const DB_FILE = path.join(DATA_DIR, "database.sqlite");
 
 /**
  * =========================================================
@@ -60,10 +62,15 @@ app.use("/uploads", express.static(UPLOADS_DIR));
 
 /**
  * =========================================================
- * STARTUP FILES
+ * STARTUP FILES / SQLITE
  * =========================================================
  */
-ensureFoldersAndDb();
+ensureStorage();
+const sqlite = new Database(DB_FILE);
+sqlite.pragma("journal_mode = WAL");
+sqlite.pragma("busy_timeout = 5000");
+ensureSqliteState();
+
 console.log("STORAGE_ROOT:", STORAGE_ROOT);
 console.log("DB_FILE:", DB_FILE);
 console.log("UPLOADS_DIR:", UPLOADS_DIR);
@@ -155,33 +162,63 @@ function getCustomerTypeFromDocument(document) {
   return "individual";
 }
 
-function ensureFoldersAndDb() {
+function initialDbState() {
+  return {
+    sorteios: [],
+    clientes: [],
+    reservas: [],
+    pagamentos: [],
+    configuracoes: {
+      companyName: "Casa Premiada Ribeirão",
+      logoUrl: "",
+      whatsapp: "",
+    },
+  };
+}
+
+function ensureStorage() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
-  if (!fs.existsSync(DB_FILE)) {
-    const initialDb = {
-      sorteios: [],
-      clientes: [],
-      reservas: [],
-      pagamentos: [],
-      configuracoes: {
-        companyName: "Casa Premiada Ribeirão",
-        logoUrl: "",
-        whatsapp: "",
-      },
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(initialDb, null, 2), "utf-8");
+function ensureSqliteState() {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  const row = sqlite.prepare("SELECT id FROM app_state WHERE id = 1").get();
+  if (!row) {
+    sqlite
+      .prepare("INSERT INTO app_state (id, payload, updated_at) VALUES (1, ?, ?)")
+      .run(JSON.stringify(initialDbState()), nowIso());
   }
 }
 
 async function readDb() {
-  const raw = await fsp.readFile(DB_FILE, "utf-8");
-  return JSON.parse(raw);
+  const row = sqlite.prepare("SELECT payload FROM app_state WHERE id = 1").get();
+  if (!row?.payload) {
+    const fallback = initialDbState();
+    await writeDb(fallback);
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(row.payload);
+  } catch {
+    const fallback = initialDbState();
+    await writeDb(fallback);
+    return fallback;
+  }
 }
 
 async function writeDb(db) {
-  await fsp.writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+  sqlite
+    .prepare("UPDATE app_state SET payload = ?, updated_at = ? WHERE id = 1")
+    .run(JSON.stringify(db), nowIso());
 }
 
 function nowIso() {
@@ -2148,6 +2185,22 @@ app.use((req, res) => {
  * START
  * =========================================================
  */
+process.on("SIGINT", () => {
+  try {
+    sqlite.close();
+  } finally {
+    process.exit(0);
+  }
+});
+
+process.on("SIGTERM", () => {
+  try {
+    sqlite.close();
+  } finally {
+    process.exit(0);
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Servidor rodando em: http://localhost:${PORT}`);
 });
