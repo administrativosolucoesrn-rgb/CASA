@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { useParams } from "react-router-dom";
 
 const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, "") || "http://localhost:3001";
@@ -19,7 +20,10 @@ function formatPhone(value = "") {
   const digits = onlyDigits(value).slice(0, 11);
   if (digits.length <= 2) return digits;
   if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  if (digits.length <= 11) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  }
+  return digits;
 }
 
 function formatTimer(seconds = 0) {
@@ -29,13 +33,21 @@ function formatTimer(seconds = 0) {
   return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
+function buildNumbersLabel(numbers = []) {
+  return [...numbers]
+    .map((n) => String(n).padStart(3, "0"))
+    .join(", ");
+}
+
 export default function SorteioPage() {
-  const slug = window.location.pathname.split("/").pop();
+  const { slug = "casa" } = useParams();
 
   const [sorteio, setSorteio] = useState(null);
   const [erro, setErro] = useState("");
+  const [loadingSorteio, setLoadingSorteio] = useState(true);
+
   const [selectedNumbers, setSelectedNumbers] = useState([]);
-  const [customer, setCustomer] = useState({ nome: "", whatsapp: "" });
+  const [customer, setCustomer] = useState({ nome: "", whatsapp: "", cpf: "" });
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [pixData, setPixData] = useState(null);
@@ -44,9 +56,15 @@ export default function SorteioPage() {
   const [timeLeft, setTimeLeft] = useState(0);
   const [paymentStatus, setPaymentStatus] = useState("idle");
 
+  const [myNumbersOpen, setMyNumbersOpen] = useState(false);
+  const [myNumbersPhone, setMyNumbersPhone] = useState("");
+  const [myNumbersLoading, setMyNumbersLoading] = useState(false);
+  const [myNumbersError, setMyNumbersError] = useState("");
+  const [myNumbersResult, setMyNumbersResult] = useState(null);
+
   useEffect(() => {
     loadSorteio();
-  }, []);
+  }, [slug]);
 
   useEffect(() => {
     if (!paymentOpen || !pixData || paymentStatus === "paid" || timeLeft <= 0) return;
@@ -66,7 +84,10 @@ export default function SorteioPage() {
   }, [paymentOpen, pixData, paymentStatus, timeLeft]);
 
   useEffect(() => {
-    if (!paymentOpen || !pixData || paymentStatus === "paid" || paymentStatus === "expired") return;
+    if (!paymentOpen || !pixData || paymentStatus === "paid" || paymentStatus === "expired") {
+      return;
+    }
+
     const paymentId = pixData?.paymentId || pixData?.pagamentoId || pixData?.pixId;
     if (!paymentId) return;
 
@@ -81,6 +102,7 @@ export default function SorteioPage() {
           setPaymentStatus("paid");
           clearInterval(poll);
           await loadSorteio();
+          return;
         }
 
         if (["expired", "cancelled", "canceled"].includes(status)) {
@@ -88,7 +110,7 @@ export default function SorteioPage() {
           clearInterval(poll);
         }
       } catch {
-        //
+        // silencioso para não poluir a tela durante o polling
       }
     }, 4000);
 
@@ -98,10 +120,21 @@ export default function SorteioPage() {
   async function loadSorteio() {
     try {
       setErro("");
+      setLoadingSorteio(true);
       const res = await axios.get(`${API_URL}/api/sorteios/${slug}`);
       setSorteio(res.data);
+      setSelectedNumbers((prev) => {
+        const unavailableSet = new Set([
+          ...(Array.isArray(res.data?.reservedNumbers) ? res.data.reservedNumbers.map(Number) : []),
+          ...(Array.isArray(res.data?.paidNumbers) ? res.data.paidNumbers.map(Number) : []),
+        ]);
+        return prev.filter((num) => !unavailableSet.has(Number(num)));
+      });
     } catch (e) {
       setErro(e?.response?.data?.error || "Erro ao carregar sorteio.");
+      setSorteio(null);
+    } finally {
+      setLoadingSorteio(false);
     }
   }
 
@@ -109,6 +142,7 @@ export default function SorteioPage() {
     () => (Array.isArray(sorteio?.reservedNumbers) ? sorteio.reservedNumbers.map(Number) : []),
     [sorteio]
   );
+
   const paidNumbers = useMemo(
     () => (Array.isArray(sorteio?.paidNumbers) ? sorteio.paidNumbers.map(Number) : []),
     [sorteio]
@@ -122,6 +156,7 @@ export default function SorteioPage() {
   const totalNumbers = Number(sorteio?.totalNumbers || 0);
   const price = Number(sorteio?.price || 0);
   const total = selectedNumbers.length * price;
+  const availableCount = Math.max(0, totalNumbers - unavailable.size);
 
   function toggleNumber(num) {
     if (unavailable.has(num)) return;
@@ -142,9 +177,7 @@ export default function SorteioPage() {
     }
 
     const shuffled = [...avail].sort(() => Math.random() - 0.5).slice(0, quantity);
-    setSelectedNumbers((prev) =>
-      [...new Set([...prev, ...shuffled])].sort((a, b) => a - b)
-    );
+    setSelectedNumbers((prev) => [...new Set([...prev, ...shuffled])].sort((a, b) => a - b));
   }
 
   function clearSelection() {
@@ -153,6 +186,7 @@ export default function SorteioPage() {
     setPaymentOpen(false);
     setPaymentStatus("idle");
     setTimeLeft(0);
+    setCopied(false);
   }
 
   async function generatePix() {
@@ -175,21 +209,23 @@ export default function SorteioPage() {
       setPixData(null);
       setPaymentStatus("pending");
 
-      const res = await axios.post(`${API_URL}/api/pix`, {
+      const body = {
         slug,
         nome: customer.nome.trim(),
         whatsapp: onlyDigits(customer.whatsapp),
         numeros: selectedNumbers,
-      });
+      };
+
+      if (onlyDigits(customer.cpf).length) {
+        body.cpf = onlyDigits(customer.cpf);
+      }
+
+      const res = await axios.post(`${API_URL}/api/pix`, body);
 
       setPixData(res.data);
       setPaymentOpen(true);
-
-      if (res.data?.expiresInSeconds) {
-        setTimeLeft(Number(res.data.expiresInSeconds));
-      } else {
-        setTimeLeft(15 * 60);
-      }
+      setCopied(false);
+      setTimeLeft(Number(res.data?.expiresInSeconds || 15 * 60));
 
       await loadSorteio();
     } catch (e) {
@@ -211,12 +247,51 @@ export default function SorteioPage() {
     }
   }
 
+  async function handleMyNumbersSearch() {
+    try {
+      setMyNumbersError("");
+      setMyNumbersResult(null);
+
+      const phoneDigits = onlyDigits(myNumbersPhone);
+      if (phoneDigits.length < 8) {
+        throw new Error("Digite seu telefone com DDD.");
+      }
+
+      setMyNumbersLoading(true);
+      const res = await axios.get(`${API_URL}/api/meus-numeros/${slug}`, {
+        params: { whatsapp: phoneDigits },
+      });
+
+      setMyNumbersResult(res.data || { nome: "", numeros: [] });
+    } catch (e) {
+      setMyNumbersError(e?.response?.data?.error || e.message || "Erro ao consultar.");
+    } finally {
+      setMyNumbersLoading(false);
+    }
+  }
+
+  function closePaymentModal() {
+    setPaymentOpen(false);
+    if (paymentStatus === "paid") {
+      setSelectedNumbers([]);
+      setPixData(null);
+      setTimeLeft(0);
+      setCopied(false);
+    }
+  }
+
+  if (loadingSorteio) {
+    return (
+      <div style={styles.loadingWrap}>
+        <div style={styles.loadingCard}>Carregando sorteio...</div>
+      </div>
+    );
+  }
+
   if (!sorteio) {
     return (
       <div style={styles.loadingWrap}>
-        <div style={styles.loadingCard}>
-          {erro || "Carregando sorteio..."}
-        </div>
+        <div style={styles.loadingCard}>{erro || "Sorteio não encontrado."}</div>
       </div>
     );
   }
@@ -246,11 +321,18 @@ export default function SorteioPage() {
             {sorteio.logoUrl ? (
               <img src={sorteio.logoUrl} alt="Logo" style={styles.logo} />
             ) : (
-              <div style={styles.logoFallback}>CASA PREMIADA</div>
+              <div style={styles.logoFallback}>{sorteio.companyName || "CASA PREMIADA"}</div>
             )}
           </div>
 
-          <button style={styles.myNumbersBtn}>
+          <button
+            style={styles.myNumbersBtn}
+            onClick={() => {
+              setMyNumbersOpen(true);
+              setMyNumbersError("");
+              setMyNumbersResult(null);
+            }}
+          >
             👁️🔎 Meus números
           </button>
         </div>
@@ -258,17 +340,35 @@ export default function SorteioPage() {
         <div style={styles.heroCard}>
           {sorteio.image ? (
             <img src={sorteio.image} alt={sorteio.title} style={styles.heroImage} />
-          ) : null}
+          ) : (
+            <div style={styles.heroNoImage}>Imagem do prêmio</div>
+          )}
 
           <div style={styles.heroInfo}>
             <div style={styles.infoChip}>
-              <div style={styles.infoLabel}>Valor</div>
+              <div style={styles.infoLabel}>Valor por número</div>
               <div style={styles.infoValue}>{formatMoney(price)}</div>
             </div>
             <div style={styles.infoMain}>
               <div style={styles.infoLabel}>Prêmio</div>
               <div style={styles.infoMainText}>{sorteio.title}</div>
+              {!!sorteio.subtitle && <div style={styles.subtitle}>{sorteio.subtitle}</div>}
             </div>
+          </div>
+        </div>
+
+        <div style={styles.statsCard}>
+          <div style={styles.statItem}>
+            <span style={styles.statLabel}>Disponíveis</span>
+            <strong style={styles.statValue}>{availableCount}</strong>
+          </div>
+          <div style={styles.statItem}>
+            <span style={styles.statLabel}>Reservados</span>
+            <strong style={styles.statValue}>{reservedNumbers.length}</strong>
+          </div>
+          <div style={styles.statItem}>
+            <span style={styles.statLabel}>Comprados</span>
+            <strong style={styles.statValue}>{paidNumbers.length}</strong>
           </div>
         </div>
 
@@ -292,9 +392,15 @@ export default function SorteioPage() {
         )}
 
         <div style={styles.legendWrap}>
-          <div style={{ ...styles.legendPill, background: "#edf2f7", color: "#1f2937" }}>Disponíveis</div>
-          <div style={{ ...styles.legendPill, background: "#111827", color: "#fff" }}>Reservados</div>
-          <div style={{ ...styles.legendPill, background: "#166534", color: "#fff" }}>Comprados</div>
+          <div style={{ ...styles.legendPill, background: "#edf2f7", color: "#1f2937" }}>
+            Disponíveis
+          </div>
+          <div style={{ ...styles.legendPill, background: "#111827", color: "#fff" }}>
+            Reservados
+          </div>
+          <div style={{ ...styles.legendPill, background: "#166534", color: "#fff" }}>
+            Comprados
+          </div>
         </div>
 
         <div style={styles.numberGrid}>
@@ -355,6 +461,14 @@ export default function SorteioPage() {
                 setCustomer((prev) => ({ ...prev, whatsapp: onlyDigits(e.target.value) }))
               }
             />
+            <input
+              style={styles.input}
+              placeholder="Seu CPF (obrigatório para PIX automático)"
+              value={customer.cpf}
+              onChange={(e) =>
+                setCustomer((prev) => ({ ...prev, cpf: onlyDigits(e.target.value).slice(0, 11) }))
+              }
+            />
           </div>
 
           {!!erro && <div style={styles.errorBox}>{erro}</div>}
@@ -371,7 +485,7 @@ export default function SorteioPage() {
       )}
 
       {paymentOpen && (
-        <div style={styles.modalOverlay} onClick={() => setPaymentOpen(false)}>
+        <div style={styles.modalOverlay} onClick={closePaymentModal}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
               <div>
@@ -380,7 +494,7 @@ export default function SorteioPage() {
                   {selectedNumbers.length} número(s) • {formatMoney(total)}
                 </div>
               </div>
-              <button style={styles.closeBtn} onClick={() => setPaymentOpen(false)}>×</button>
+              <button style={styles.closeBtn} onClick={closePaymentModal}>×</button>
             </div>
 
             <div
@@ -423,12 +537,10 @@ export default function SorteioPage() {
 
                   <div style={styles.qrWrap}>
                     {pixData?.qrCodeBase64 ? (
-                      <img
-                        src={pixData.qrCodeBase64}
-                        alt="QR Code PIX"
-                        style={styles.qrImage}
-                      />
-                    ) : null}
+                      <img src={pixData.qrCodeBase64} alt="QR Code PIX" style={styles.qrImage} />
+                    ) : (
+                      <div style={styles.qrFallback}>QR Code indisponível</div>
+                    )}
                   </div>
 
                   <div style={styles.timerBox}>
@@ -440,7 +552,7 @@ export default function SorteioPage() {
                 <div style={styles.detailCard}>
                   <div style={styles.rowInfo}>
                     <span>Recebedor</span>
-                    <strong>46.573.111 RAILANNY SILVA</strong>
+                    <strong>{sorteio.companyName || "Casa Premiada"}</strong>
                   </div>
                   <div style={styles.rowInfo}>
                     <span>Tipo de pagamento</span>
@@ -452,7 +564,7 @@ export default function SorteioPage() {
                   </div>
                   <div style={styles.rowInfo}>
                     <span>Números</span>
-                    <strong>{selectedNumbers.length}</strong>
+                    <strong>{buildNumbersLabel(selectedNumbers)}</strong>
                   </div>
 
                   <div style={styles.fieldWrap}>
@@ -484,6 +596,64 @@ export default function SorteioPage() {
           </div>
         </div>
       )}
+
+      {myNumbersOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => {
+            setMyNumbersOpen(false);
+          }}
+        >
+          <div style={styles.smallModalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div>
+                <div style={styles.smallModalTitle}>Consultar meus números</div>
+                <div style={styles.modalSub}>Digite seu telefone com DDD</div>
+              </div>
+              <button style={styles.closeBtn} onClick={() => setMyNumbersOpen(false)}>
+                ×
+              </button>
+            </div>
+
+            <div style={styles.formFields}>
+              <input
+                style={styles.input}
+                placeholder="Seu WhatsApp"
+                value={formatPhone(myNumbersPhone)}
+                onChange={(e) => setMyNumbersPhone(onlyDigits(e.target.value))}
+              />
+            </div>
+
+            {myNumbersError ? <div style={styles.errorBox}>{myNumbersError}</div> : null}
+
+            {myNumbersResult && (
+              <div style={styles.myNumbersResult}>
+                <div style={styles.myNumbersName}>{myNumbersResult?.nome || "Participante"}</div>
+                <div style={styles.myNumbersLabel}>Seus números:</div>
+                {Array.isArray(myNumbersResult?.numeros) && myNumbersResult.numeros.length ? (
+                  <div style={styles.selectedWrap}>
+                    {myNumbersResult.numeros.map((n) => (
+                      <span key={n} style={styles.selectedPill}>
+                        {String(n).padStart(3, "0")}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={styles.noticeBox}>Nenhum número encontrado para este telefone.</div>
+                )}
+              </div>
+            )}
+
+            <button
+              style={styles.fullActionBtn}
+              onClick={handleMyNumbersSearch}
+              disabled={myNumbersLoading}
+            >
+              {myNumbersLoading ? "Consultando..." : "Buscar meus números"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -500,6 +670,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     background: "#eef2ef",
+    padding: 16,
   },
   loadingCard: {
     background: "#fff",
@@ -508,6 +679,7 @@ const styles = {
     boxShadow: "0 8px 24px rgba(15,23,42,0.08)",
     fontSize: 16,
     color: "#111827",
+    textAlign: "center",
   },
   container: {
     maxWidth: 620,
@@ -523,15 +695,18 @@ const styles = {
     alignItems: "center",
     padding: "10px 0 14px",
     background: "#eef2ef",
+    gap: 12,
   },
   logoArea: {
     minHeight: 46,
     display: "flex",
     alignItems: "center",
+    minWidth: 0,
   },
   logo: {
     height: 48,
     objectFit: "contain",
+    maxWidth: 180,
   },
   logoFallback: {
     fontWeight: 700,
@@ -546,6 +721,7 @@ const styles = {
     padding: "12px 16px",
     fontWeight: 700,
     fontSize: 14,
+    whiteSpace: "nowrap",
   },
   heroCard: {
     background: "#fff",
@@ -558,7 +734,18 @@ const styles = {
     width: "100%",
     display: "block",
     minHeight: 260,
+    maxHeight: 420,
     objectFit: "cover",
+  },
+  heroNoImage: {
+    minHeight: 260,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg,#dce7dd,#f4f7f4)",
+    color: "#475467",
+    fontSize: 18,
+    fontWeight: 700,
   },
   heroInfo: {
     background: "#111111",
@@ -584,6 +771,39 @@ const styles = {
     fontSize: 18,
     fontWeight: 800,
     lineHeight: 1.2,
+  },
+  subtitle: {
+    color: "#d1d5db",
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 1.4,
+  },
+  statsCard: {
+    background: "#fff",
+    borderRadius: 22,
+    padding: 14,
+    display: "grid",
+    gridTemplateColumns: "repeat(3,1fr)",
+    gap: 10,
+    boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
+    marginBottom: 14,
+  },
+  statItem: {
+    background: "#f8fafc",
+    borderRadius: 16,
+    padding: 12,
+    textAlign: "center",
+  },
+  statLabel: {
+    display: "block",
+    fontSize: 12,
+    color: "#667085",
+    marginBottom: 4,
+    fontWeight: 700,
+  },
+  statValue: {
+    fontSize: 18,
+    color: "#111827",
   },
   descriptionCard: {
     background: "#fff",
@@ -624,6 +844,7 @@ const styles = {
     color: "#111827",
     fontWeight: 800,
     fontSize: 16,
+    cursor: "pointer",
   },
   legendWrap: {
     display: "grid",
@@ -656,16 +877,19 @@ const styles = {
     fontSize: 13,
     fontWeight: 700,
     boxShadow: "0 4px 10px rgba(15,23,42,0.04)",
+    cursor: "pointer",
   },
   numberReserved: {
     background: "#111827",
     color: "#fff",
     border: "1.5px solid #111827",
+    cursor: "not-allowed",
   },
   numberPaid: {
     background: "#166534",
     color: "#fff",
     border: "1.5px solid #166534",
+    cursor: "not-allowed",
   },
   numberSelected: {
     background: "linear-gradient(135deg,#10b981,#0f8f4c)",
@@ -684,12 +908,15 @@ const styles = {
     padding: 14,
     border: "1px solid #eef2f6",
     boxShadow: "0 16px 30px rgba(15,23,42,.14)",
+    maxWidth: 760,
+    margin: "0 auto",
   },
   cartRow: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 10,
+    gap: 12,
   },
   cartText: {
     color: "#111827",
@@ -754,6 +981,7 @@ const styles = {
     color: "#111827",
     fontWeight: 700,
     fontSize: 15,
+    cursor: "pointer",
   },
   payBtn: {
     minHeight: 50,
@@ -764,6 +992,7 @@ const styles = {
     fontWeight: 800,
     fontSize: 15,
     animation: "pulseGlow 1.8s infinite",
+    cursor: "pointer",
   },
   modalOverlay: {
     position: "fixed",
@@ -785,6 +1014,16 @@ const styles = {
     overflowY: "auto",
     boxShadow: "0 24px 60px rgba(0,0,0,.28)",
   },
+  smallModalCard: {
+    width: "100%",
+    maxWidth: 560,
+    background: "#fff",
+    borderRadius: 30,
+    padding: 20,
+    maxHeight: "94vh",
+    overflowY: "auto",
+    boxShadow: "0 24px 60px rgba(0,0,0,.28)",
+  },
   modalHeader: {
     display: "flex",
     justifyContent: "space-between",
@@ -794,6 +1033,11 @@ const styles = {
   },
   modalTitle: {
     fontSize: 30,
+    fontWeight: 800,
+    color: "#111827",
+  },
+  smallModalTitle: {
+    fontSize: 24,
     fontWeight: 800,
     color: "#111827",
   },
@@ -808,6 +1052,7 @@ const styles = {
     color: "#667085",
     fontSize: 34,
     lineHeight: 1,
+    cursor: "pointer",
   },
   statusBox: {
     borderRadius: 22,
@@ -864,6 +1109,7 @@ const styles = {
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 18,
+    minHeight: 220,
   },
   qrImage: {
     width: "100%",
@@ -873,6 +1119,19 @@ const styles = {
     border: "1px solid #e5e7eb",
     borderRadius: 24,
     padding: 14,
+  },
+  qrFallback: {
+    width: "100%",
+    maxWidth: 320,
+    minHeight: 220,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#fff",
+    border: "1px dashed #cbd5e1",
+    borderRadius: 24,
+    color: "#667085",
+    fontWeight: 700,
   },
   timerBox: {
     display: "flex",
@@ -949,6 +1208,7 @@ const styles = {
     fontWeight: 800,
     fontSize: 18,
     padding: "0 18px",
+    cursor: "pointer",
   },
   noticeBox: {
     marginTop: 10,
@@ -970,6 +1230,7 @@ const styles = {
     color: "#fff",
     fontWeight: 800,
     fontSize: 16,
+    cursor: "pointer",
   },
   successWrap: {
     background: "#ecfdf3",
@@ -992,5 +1253,32 @@ const styles = {
     color: "#14532d",
     fontSize: 16,
     lineHeight: 1.5,
+  },
+  myNumbersResult: {
+    marginTop: 8,
+    marginBottom: 14,
+  },
+  myNumbersName: {
+    fontSize: 20,
+    fontWeight: 800,
+    color: "#111827",
+    marginBottom: 6,
+  },
+  myNumbersLabel: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#475467",
+    marginBottom: 10,
+  },
+  fullActionBtn: {
+    width: "100%",
+    minHeight: 52,
+    borderRadius: 16,
+    border: "none",
+    background: "linear-gradient(135deg,#1db874,#149954)",
+    color: "#fff",
+    fontWeight: 800,
+    fontSize: 16,
+    cursor: "pointer",
   },
 };
