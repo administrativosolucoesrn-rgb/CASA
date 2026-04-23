@@ -169,12 +169,15 @@ export default function AdminPage() {
 
   const [participants, setParticipants] = useState([]);
   const [resumo, setResumo] = useState(null);
+  const [pagamentos, setPagamentos] = useState([]);
 
   const [loadingSorteios, setLoadingSorteios] = useState(false);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [loadingResumo, setLoadingResumo] = useState(false);
+  const [loadingPagamentos, setLoadingPagamentos] = useState(false);
   const [savingSorteio, setSavingSorteio] = useState(false);
   const [savingParticipant, setSavingParticipant] = useState(false);
+  const [confirmingPaymentId, setConfirmingPaymentId] = useState("");
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -187,9 +190,11 @@ export default function AdminPage() {
     if (selectedSorteioId) {
       loadParticipants(selectedSorteioId);
       loadResumo(selectedSorteioId);
+      loadPagamentos(selectedSorteioId);
     } else {
       setParticipants([]);
       setResumo(null);
+      setPagamentos([]);
     }
   }, [selectedSorteioId]);
 
@@ -250,6 +255,7 @@ export default function AdminPage() {
         id: item.id || `${item.nome || "p"}-${item.whatsapp || "w"}-${index}`,
         nome: item.nome || "",
         telefone: item.whatsapp ? formatPhone(item.whatsapp) : "",
+        whatsappRaw: item.whatsapp || "",
         numeros: Array.isArray(item.numeros) ? item.numeros : [],
         numerosTexto:
           item.numerosTexto ||
@@ -260,6 +266,7 @@ export default function AdminPage() {
         observacao: item.observacao || "",
         valorPago: item.total || 0,
         createdAt: item.createdAt || null,
+        expiresAt: item.expiresAt || null,
       }));
 
       setParticipants(normalized);
@@ -286,10 +293,30 @@ export default function AdminPage() {
       }
 
       setResumo(data);
-    } catch {
+    } catch (err) {
       setResumo(null);
+      setError(err.message || "Erro ao carregar resumo.");
     } finally {
       setLoadingResumo(false);
+    }
+  }
+
+  async function loadPagamentos(sorteioId) {
+    try {
+      setLoadingPagamentos(true);
+      const res = await fetch(`${API_BASE}/api/pagamentos?sorteioId=${sorteioId}`);
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao carregar pagamentos.");
+      }
+
+      setPagamentos(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setPagamentos([]);
+      setError(err.message || "Erro ao carregar pagamentos.");
+    } finally {
+      setLoadingPagamentos(false);
     }
   }
 
@@ -313,6 +340,8 @@ export default function AdminPage() {
       vendidos: Number(metricas.vendidos || 0),
       reservados: Number(metricas.reservados || 0),
       disponiveis: Number(metricas.disponiveis || 0),
+      pagamentosPendentes: Number(metricas.pagamentosPendentes || 0),
+      pagamentosPagos: Number(metricas.pagamentosPagos || 0),
     };
   }, [resumo]);
 
@@ -376,6 +405,11 @@ export default function AdminPage() {
       };
     });
   }, [groupedParticipants]);
+
+  const publicLink = useMemo(() => {
+    if (!selectedSorteio) return "";
+    return `${window.location.origin}/sorteio/${selectedSorteio.slug || selectedSorteio.id}`;
+  }, [selectedSorteio]);
 
   function handleImageFileChange(event) {
     const file = event.target.files?.[0] || null;
@@ -503,6 +537,7 @@ export default function AdminPage() {
         setSelectedSorteioId(sorteioSalvo.id);
         await loadResumo(sorteioSalvo.id);
         await loadParticipants(sorteioSalvo.id);
+        await loadPagamentos(sorteioSalvo.id);
       }
     } catch (err) {
       setError(err.message || "Erro ao salvar sorteio.");
@@ -558,6 +593,7 @@ export default function AdminPage() {
       resetSorteioForm();
       setParticipants([]);
       setResumo(null);
+      setPagamentos([]);
     } catch (err) {
       setError(err.message || "Erro ao excluir sorteio.");
     }
@@ -632,6 +668,7 @@ export default function AdminPage() {
       resetParticipantForm();
       await loadParticipants(selectedSorteio.id);
       await loadResumo(selectedSorteio.id);
+      await loadPagamentos(selectedSorteio.id);
     } catch (err) {
       setError(err.message || "Erro ao cadastrar participante.");
     } finally {
@@ -660,9 +697,42 @@ export default function AdminPage() {
       if (selectedSorteioId) {
         await loadParticipants(selectedSorteioId);
         await loadResumo(selectedSorteioId);
+        await loadPagamentos(selectedSorteioId);
       }
     } catch (err) {
       setError(err.message || "Erro ao excluir participante.");
+    }
+  }
+
+  async function handleConfirmPayment(id) {
+    const confirmed = window.confirm("Confirmar este pagamento manualmente?");
+    if (!confirmed) return;
+
+    try {
+      setConfirmingPaymentId(id);
+      setError("");
+      setMessage("");
+
+      const res = await fetch(`${API_BASE}/api/pagamentos/${id}/confirmar`, {
+        method: "POST",
+      });
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Erro ao confirmar pagamento.");
+      }
+
+      setMessage("Pagamento confirmado com sucesso.");
+
+      if (selectedSorteioId) {
+        await loadResumo(selectedSorteioId);
+        await loadParticipants(selectedSorteioId);
+        await loadPagamentos(selectedSorteioId);
+      }
+    } catch (err) {
+      setError(err.message || "Erro ao confirmar pagamento.");
+    } finally {
+      setConfirmingPaymentId("");
     }
   }
 
@@ -731,6 +801,7 @@ export default function AdminPage() {
       setMessage("Blocos padrão criados com sucesso.");
       await loadParticipants(selectedSorteio.id);
       await loadResumo(selectedSorteio.id);
+      await loadPagamentos(selectedSorteio.id);
     } catch (err) {
       setError(err.message || "Erro ao criar blocos.");
     }
@@ -739,12 +810,8 @@ export default function AdminPage() {
   async function handleCopyLink() {
     if (!selectedSorteio) return;
 
-    const link = `${window.location.origin}/#/sorteio/${
-      selectedSorteio.slug || selectedSorteio.id
-    }`;
-
     try {
-      await copyToClipboard(link);
+      await copyToClipboard(publicLink);
       setMessage("Link copiado com sucesso.");
       setError("");
     } catch (err) {
@@ -755,21 +822,17 @@ export default function AdminPage() {
   async function handleShare() {
     if (!selectedSorteio) return;
 
-    const link = `${window.location.origin}/#/sorteio/${
-      selectedSorteio.slug || selectedSorteio.id
-    }`;
-
     try {
       if (navigator.share) {
         await navigator.share({
           title: selectedSorteio.title || "Sorteio",
           text: `Participe do sorteio ${selectedSorteio.title || ""}`,
-          url: link,
+          url: publicLink,
         });
         setMessage("Link compartilhado com sucesso.");
         setError("");
       } else {
-        await copyToClipboard(link);
+        await copyToClipboard(publicLink);
         setMessage("Compartilhamento não disponível. Link copiado.");
         setError("");
       }
@@ -778,6 +841,11 @@ export default function AdminPage() {
         setError("Não foi possível compartilhar agora.");
       }
     }
+  }
+
+  function handleOpenPublic() {
+    if (!selectedSorteio || !publicLink) return;
+    window.open(publicLink, "_blank", "noopener,noreferrer");
   }
 
   function handleExportParticipants() {
@@ -819,6 +887,16 @@ export default function AdminPage() {
 
   return (
     <div style={styles.page}>
+      <style>{`
+        * { box-sizing: border-box; }
+        @media (max-width: 980px) {
+          .admin-main-grid,
+          .admin-two-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
+
       <div style={styles.container}>
         <header style={styles.header}>
           <div>
@@ -834,7 +912,7 @@ export default function AdminPage() {
         {error ? <div style={styles.errorBox}>{error}</div> : null}
         {message ? <div style={styles.successBox}>{message}</div> : null}
 
-        <section style={styles.mainGrid}>
+        <section className="admin-main-grid" style={styles.mainGrid}>
           <div style={styles.card}>
             <h2 style={styles.cardTitle}>
               {sorteioForm.id ? "Editar sorteio" : "Criar sorteio"}
@@ -1024,13 +1102,15 @@ export default function AdminPage() {
                           style={styles.smallButton}
                           onClick={async () => {
                             setSelectedSorteioId(sorteio.id);
-                            await copyToClipboard(
-                              `${window.location.origin}/#/sorteio/${
-                                sorteio.slug || sorteio.id
-                              }`
-                            );
-                            setMessage("Link copiado.");
-                            setError("");
+                            try {
+                              await copyToClipboard(
+                                `${window.location.origin}/sorteio/${sorteio.slug || sorteio.id}`
+                              );
+                              setMessage("Link copiado.");
+                              setError("");
+                            } catch (err) {
+                              setError(err.message || "Não foi possível copiar o link.");
+                            }
                           }}
                         >
                           Link
@@ -1082,6 +1162,20 @@ export default function AdminPage() {
                   {loadingResumo ? "..." : sorteioMetrics.disponiveis}
                 </strong>
               </div>
+
+              <div style={styles.metricCard}>
+                <span style={styles.metricLabel}>Pagamentos pendentes</span>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : sorteioMetrics.pagamentosPendentes}
+                </strong>
+              </div>
+
+              <div style={styles.metricCard}>
+                <span style={styles.metricLabel}>Pagamentos pagos</span>
+                <strong style={styles.metricValue}>
+                  {loadingResumo ? "..." : sorteioMetrics.pagamentosPagos}
+                </strong>
+              </div>
             </section>
 
             <section style={styles.card}>
@@ -1131,12 +1225,15 @@ export default function AdminPage() {
               <div style={styles.sectionHeader}>
                 <div>
                   <h2 style={styles.cardTitle}>Link do sorteio</h2>
-                  <p style={styles.subtitle2}>Copie ou compartilhe o link público</p>
+                  <p style={styles.subtitle2}>Copie, abra ou compartilhe o link público</p>
                 </div>
 
                 <div style={styles.inlineButtons}>
                   <button style={styles.greenButton} onClick={handleCopyLink}>
                     Copiar link
+                  </button>
+                  <button style={styles.grayButton} onClick={handleOpenPublic}>
+                    Abrir página
                   </button>
                   <button style={styles.grayButton} onClick={handleShare}>
                     Compartilhar
@@ -1144,13 +1241,7 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <input
-                readOnly
-                style={styles.input}
-                value={`${window.location.origin}/#/sorteio/${
-                  selectedSorteio.slug || selectedSorteio.id
-                }`}
-              />
+              <input readOnly style={styles.input} value={publicLink} />
             </section>
 
             <section style={styles.card}>
@@ -1187,7 +1278,7 @@ export default function AdminPage() {
               </div>
             </section>
 
-            <section style={styles.twoSectionGrid}>
+            <section className="admin-two-grid" style={styles.twoSectionGrid}>
               <div style={styles.card}>
                 <h2 style={styles.cardTitle}>Adicionar participante</h2>
 
@@ -1365,6 +1456,84 @@ export default function AdminPage() {
                 )}
               </div>
             </section>
+
+            <section style={styles.card}>
+              <div style={styles.sectionHeader}>
+                <div>
+                  <h2 style={styles.cardTitle}>Pagamentos</h2>
+                  <p style={styles.subtitle2}>Confirme manualmente quando necessário</p>
+                </div>
+              </div>
+
+              {loadingPagamentos ? (
+                <p>Carregando pagamentos...</p>
+              ) : pagamentos.length === 0 ? (
+                <p>Nenhum pagamento encontrado.</p>
+              ) : (
+                <div style={styles.tableWrapper}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Cliente</th>
+                        <th style={styles.th}>Telefone</th>
+                        <th style={styles.th}>Números</th>
+                        <th style={styles.th}>Valor</th>
+                        <th style={styles.th}>Forma</th>
+                        <th style={styles.th}>Status</th>
+                        <th style={styles.th}>Criado em</th>
+                        <th style={styles.th}>Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagamentos.map((pagamento) => (
+                        <tr key={pagamento.id}>
+                          <td style={styles.td}>{pagamento.nome || "-"}</td>
+                          <td style={styles.td}>
+                            {pagamento.whatsapp ? formatPhone(pagamento.whatsapp) : "-"}
+                          </td>
+                          <td style={styles.td}>
+                            {formatNumbersCompact(pagamento.numeros || []) || "-"}
+                          </td>
+                          <td style={styles.td}>{currencyBRL(pagamento.valor || 0)}</td>
+                          <td style={styles.td}>{pagamento.forma || "-"}</td>
+                          <td style={styles.td}>
+                            <span
+                              style={{
+                                ...styles.badge,
+                                ...(pagamento.status === "pago"
+                                  ? styles.badgePaid
+                                  : pagamento.status === "pendente"
+                                  ? styles.badgePending
+                                  : styles.badgeNeutral),
+                              }}
+                            >
+                              {pagamento.status || "-"}
+                            </span>
+                          </td>
+                          <td style={styles.td}>{formatDate(pagamento.createdAt)}</td>
+                          <td style={styles.td}>
+                            {pagamento.status === "pendente" ? (
+                              <button
+                                type="button"
+                                style={styles.smallButton}
+                                onClick={() => handleConfirmPayment(pagamento.id)}
+                                disabled={confirmingPaymentId === pagamento.id}
+                              >
+                                {confirmingPaymentId === pagamento.id
+                                  ? "Confirmando..."
+                                  : "Confirmar"}
+                              </button>
+                            ) : (
+                              <span style={styles.helpSmall}>—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
           </>
         ) : null}
       </div>
@@ -1511,6 +1680,7 @@ const styles = {
     borderRadius: "20px",
     padding: "20px",
     boxShadow: "0 8px 22px rgba(15,23,42,0.06)",
+    marginBottom: "20px",
   },
   cardTitle: {
     margin: "0 0 16px 0",
@@ -1635,6 +1805,21 @@ const styles = {
     borderRadius: "999px",
     fontWeight: 700,
     textTransform: "capitalize",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badgePaid: {
+    background: "#dcfce7",
+    color: "#166534",
+  },
+  badgePending: {
+    background: "#fef3c7",
+    color: "#92400e",
+  },
+  badgeNeutral: {
+    background: "#f3f4f6",
+    color: "#374151",
   },
   metaText: {
     fontSize: "13px",
@@ -1738,6 +1923,7 @@ const styles = {
     background: "#f9fafb",
     borderBottom: "1px solid #e5e7eb",
     fontSize: "13px",
+    whiteSpace: "nowrap",
   },
   td: {
     padding: "12px",
